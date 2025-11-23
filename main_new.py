@@ -24,7 +24,7 @@ except ImportError:
     sys.exit(1)
 
 # ==========================================
-# 1. UTILS & INDENT (Python 3)
+# 1. UTILS & INDENT
 # ==========================================
 
 LOG_CALLBACK = print 
@@ -127,7 +127,8 @@ class VitaAddress:
             try:
                 elf_parser.disas_around_addr(self.__offset, self.__vaddr)
             except Exception as e:
-                iprint(f"Disassembly failed (Is arm-vita-eabi-objdump in PATH?): {e}")
+                iprint(f"Disassembly failed: {e}")
+                iprint("Ensure SDK Path is set correctly in Settings.")
 
     def to_string(self, elf_parser=None):
         if self.is_located():
@@ -153,7 +154,6 @@ class CoreSegment:
 class CoreParser:
     def __init__(self, filename):
         self.file_handle = open(filename, "rb")
-        # Handle GZIP check
         header = self.file_handle.read(2)
         self.file_handle.seek(0)
         
@@ -242,14 +242,25 @@ class CoreParser:
         return None
 
 class ElfParserObj:
-    def __init__(self, filename):
+    def __init__(self, filename, sdk_path=None):
         self.filename = filename
+        self.sdk_path = sdk_path
         self.f = open(filename, "rb")
         self.elf = ELFFile(self.f)
         self.rx_vaddr = -1
         self.parse_segments()
         self.f.close()
         self.a2l = None
+
+    def get_tool_command(self, tool):
+        # If sdk_path is set, prepend it. Otherwise assume it's in PATH.
+        if self.sdk_path and os.path.isdir(self.sdk_path):
+            full_path = os.path.join(self.sdk_path, tool)
+            # Add .exe extension for Windows if missing
+            if os.name == 'nt' and not full_path.endswith('.exe'):
+                full_path += '.exe'
+            return full_path
+        return tool
 
     def parse_segments(self):
         for seg in self.elf.iter_segments():
@@ -268,7 +279,9 @@ class ElfParserObj:
         start = abs_addr - 0x10
         end = abs_addr + 0x10
 
-        args = ["arm-vita-eabi-objdump", "-d", "-S",
+        cmd = self.get_tool_command("arm-vita-eabi-objdump")
+        
+        args = [cmd, "-d", "-S",
             "--start-address=0x{:x}".format(start), 
             "--stop-address=0x{:x}".format(end), 
             self.filename]
@@ -276,7 +289,8 @@ class ElfParserObj:
         if thumb:
             args += ['-Mforce-thumb']
 
-        output = subprocess.check_output(args)
+        # Use shell=False to avoid issues, but ensure path is correct
+        output = subprocess.check_output(args, stderr=subprocess.STDOUT)
         text_output = output.decode('utf-8', errors='replace')
         lines = text_output.split("\n")
         
@@ -295,8 +309,9 @@ class ElfParserObj:
 
     def addr2line(self, offset):
         if not self.a2l:
+            cmd = self.get_tool_command("arm-vita-eabi-addr2line")
             self.a2l = subprocess.Popen(
-                ["arm-vita-eabi-addr2line", "-e", self.filename, "-f", "-p", "-C"], 
+                [cmd, "-e", self.filename, "-f", "-p", "-C"], 
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE
             )
         
@@ -315,20 +330,22 @@ class DumpParserThread(QThread):
     output_signal = Signal(str)
     finished_signal = Signal()
 
-    def __init__(self, core_file, elf_file):
+    def __init__(self, core_file, elf_file, sdk_path=None):
         super().__init__()
         self.core_file = core_file
         self.elf_file = elf_file
+        self.sdk_path = sdk_path
 
     def run(self):
         global LOG_CALLBACK
         LOG_CALLBACK = self.emit_log
         
         try:
-            self.emit_log(f"--- Starting Analysis ---\nCore: {self.core_file}\nELF: {self.elf_file}\n")
+            self.emit_log(f"--- Starting Analysis ---\nCore: {self.core_file}\nELF: {self.elf_file}\nSDK Path: {self.sdk_path}\n")
             
             core = CoreParser(self.core_file)
-            elf = ElfParserObj(self.elf_file)
+            # Pass SDK path to ELF Parser
+            elf = ElfParserObj(self.elf_file, self.sdk_path)
 
             str_stop_reason = defaultdict(str, {
                 0: "No reason", 0x30002: "Undefined instruction exception",
@@ -514,14 +531,38 @@ class VitaDeckModern(QWidget):
         log_layout.addWidget(self.log_output)
         self.tabs.addTab(log_tab, "Logging")
 
-        # Tab 2: Core dump
+        # Tab 2: Core dump (UPDATED LAYOUT)
         core_tab = QWidget()
         core_layout = QVBoxLayout(core_tab)
+        
+        # --- Toolbar for Core Dump Controls ---
+        core_controls_layout = QHBoxLayout()
+        core_controls_layout.setContentsMargins(0, 0, 0, 10)
+        
+        self.btn_load_elf = QPushButton("Load .elf")
+        self.btn_load_elf.clicked.connect(self.load_elf_file)
+        
+        self.btn_load_crash = QPushButton("Load crash")
+        self.btn_load_crash.clicked.connect(self.load_crash_file)
+        
+        self.btn_parse = QPushButton("Analyze Crash Dump")
+        self.btn_parse.setEnabled(False) 
+        self.btn_parse.clicked.connect(self.start_core_parser)
+        
+        core_controls_layout.addWidget(self.btn_load_elf)
+        core_controls_layout.addWidget(self.btn_load_crash)
+        core_controls_layout.addWidget(self.btn_parse)
+        core_controls_layout.addStretch()
+        
+        core_layout.addLayout(core_controls_layout)
+        
+        # --- Core Output Text ---
         core_layout.addWidget(QLabel("Core Dump Analysis Output:"))
         self.core_output = QPlainTextEdit()
         self.core_output.setReadOnly(True)
         self.core_output.setObjectName("logOutput")
         core_layout.addWidget(self.core_output)
+        
         self.tabs.addTab(core_tab, "Core dump")
 
         # Tab 3: Command palette
@@ -557,24 +598,10 @@ class VitaDeckModern(QWidget):
         sb.addWidget(btn_reconnect)
         sb.addSpacing(12)
 
-        # === CORE DUMPS SECTION (UPDATED) ===
+        # === CORE DUMPS SIDEBAR (RESTORED) ===
         sb.addWidget(QLabel("Core dumps"))
-        
-        # Button 1: Load ELF
-        self.btn_load_elf = QPushButton("Load .elf")
-        self.btn_load_elf.clicked.connect(self.load_elf_file)
-        sb.addWidget(self.btn_load_elf)
-
-        # Button 2: Load Crash
-        self.btn_load_crash = QPushButton("Load crash")
-        self.btn_load_crash.clicked.connect(self.load_crash_file)
-        sb.addWidget(self.btn_load_crash)
-        
-        # Button 3: Run Analysis (Disabled initially)
-        self.btn_parse = QPushButton("Analyze Crash Dump")
-        self.btn_parse.setEnabled(False) 
-        self.btn_parse.clicked.connect(self.start_core_parser)
-        sb.addWidget(self.btn_parse)
+        sb.addWidget(QPushButton("Fetch and parse"))
+        sb.addWidget(QPushButton("Fetch and parse (VCP)"))
 
         sb.addSpacing(12)
         sb.addWidget(QLabel("Run executable"))
@@ -624,6 +651,25 @@ class VitaDeckModern(QWidget):
         layout.setSpacing(20)
         layout.setAlignment(Qt.AlignTop)
 
+        # 1. Vita SDK Config
+        grp_sdk = QGroupBox("Vita SDK Configuration")
+        sdk_layout = QVBoxLayout(grp_sdk)
+        sdk_layout.addWidget(QLabel("Path to VitaSDK 'bin' folder (e.g. C:/VitaSDK/bin):"))
+        
+        hbox_sdk = QHBoxLayout()
+        self.sdk_path_input = QLineEdit()
+        self.sdk_path_input.setPlaceholderText("Select folder containing arm-vita-eabi-objdump...")
+        
+        btn_browse_sdk = QPushButton("Browse")
+        btn_browse_sdk.clicked.connect(self.browse_sdk_path)
+        
+        hbox_sdk.addWidget(self.sdk_path_input)
+        hbox_sdk.addWidget(btn_browse_sdk)
+        
+        sdk_layout.addLayout(hbox_sdk)
+        layout.addWidget(grp_sdk)
+
+        # 2. Server Config
         grp_server = QGroupBox("Logging Server Configuration")
         srv_layout = QVBoxLayout(grp_server)
         lbl_port = QLabel("Listening Port:")
@@ -637,6 +683,7 @@ class VitaDeckModern(QWidget):
         srv_layout.addWidget(btn_apply_port)
         layout.addWidget(grp_server)
 
+        # 3. Appearance
         grp_appearance = QGroupBox("Log Appearance")
         app_layout = QVBoxLayout(grp_appearance)
         font_ctrl_layout = QHBoxLayout()
@@ -665,6 +712,11 @@ class VitaDeckModern(QWidget):
         app_layout.addWidget(self.preview_box)
         layout.addWidget(grp_appearance)
         layout.addStretch()
+
+    def browse_sdk_path(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select VitaSDK bin directory")
+        if folder:
+            self.sdk_path_input.setText(folder)
 
     def update_font(self, delta):
         new_size = self.log_font_size + delta
@@ -700,56 +752,49 @@ class VitaDeckModern(QWidget):
     
     def load_elf_file(self):
         filename, _ = QFileDialog.getOpenFileName(self, "Select ELF File", "", "ELF Binary (*.elf);;All Files (*)")
-        if not filename:
-            return
+        if not filename: return
             
-        # Validate format
         if not filename.lower().endswith(".elf"):
-            self.log_gui_message("ERROR: Incorrect ELF format. File must end with <b>.elf</b> (e.g., 'eboot.elf')", "red")
-            self.tabs.setCurrentIndex(0) # Switch to Log tab to show error
+            self.log_gui_message("ERROR: Incorrect ELF format. File must end with <b>.elf</b>", "red")
+            self.tabs.setCurrentIndex(0)
             return
             
         self.selected_elf = filename
         self.btn_load_elf.setText("ELF Loaded ✓")
         self.btn_load_elf.setStyleSheet("color: #3ecf4c; border: 1px solid #3ecf4c;")
-        self.log_gui_message(f"ELF loaded: {os.path.basename(filename)}", "#3ecf4c")
         self.check_parse_ready()
 
     def load_crash_file(self):
         filename, _ = QFileDialog.getOpenFileName(self, "Select Crash Dump", "", "Core Dump (*.psp2dmp);;All Files (*)")
-        if not filename:
-            return
+        if not filename: return
             
-        # Validate format
         if not filename.lower().endswith(".psp2dmp"):
-            self.log_gui_message("ERROR: Incorrect Crash Dump format. File must end with <b>.psp2dmp</b> or <b>.bin.psp2dmp</b>", "red")
-            self.tabs.setCurrentIndex(0) # Switch to Log tab to show error
+            self.log_gui_message("ERROR: Incorrect Crash Dump format. File must end with <b>.psp2dmp</b>", "red")
+            self.tabs.setCurrentIndex(0)
             return
             
         self.selected_core = filename
         self.btn_load_crash.setText("Crash Loaded ✓")
         self.btn_load_crash.setStyleSheet("color: #3ecf4c; border: 1px solid #3ecf4c;")
-        self.log_gui_message(f"Crash dump loaded: {os.path.basename(filename)}", "#3ecf4c")
         self.check_parse_ready()
         
     def check_parse_ready(self):
-        """Enables the parse button only if both files are loaded"""
         if self.selected_elf and self.selected_core:
             self.btn_parse.setEnabled(True)
             self.btn_parse.setText("Analyze Crash Dump")
-            self.btn_parse.setStyleSheet("background-color: #2f4f6f;") # Reset style
+            self.btn_parse.setStyleSheet("background-color: #2f4f6f;")
 
     def start_core_parser(self):
         if not self.selected_elf or not self.selected_core:
             return
             
-        # 1. Switch to Core Tab
-        self.tabs.setCurrentIndex(1)
+        # Get SDK Path from Settings
+        sdk_path = self.sdk_path_input.text().strip()
+            
         self.core_output.clear()
         self.core_output.appendPlainText("Initializing Parser...\n")
 
-        # 2. Start Thread
-        self.parser_thread = DumpParserThread(self.selected_core, self.selected_elf)
+        self.parser_thread = DumpParserThread(self.selected_core, self.selected_elf, sdk_path)
         self.parser_thread.output_signal.connect(self.update_core_log)
         self.parser_thread.finished_signal.connect(self.parser_finished)
         self.btn_parse.setEnabled(False)
@@ -769,7 +814,6 @@ class VitaDeckModern(QWidget):
         self.core_output.appendPlainText("\nDone.")
 
     def log_gui_message(self, message, color="white"):
-        """Helper to print formatted messages to the main log"""
         self.log_output.moveCursor(QTextCursor.End)
         self.log_output.appendHtml(f"<font color='{color}'>{message}</font>")
         self.log_output.moveCursor(QTextCursor.End)
