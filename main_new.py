@@ -6,22 +6,28 @@ import string
 import subprocess
 import os
 from collections import defaultdict
+import ftplib
+import time
 
 # PySide6 Imports
 from PySide6.QtWidgets import (
     QApplication, QWidget, QHBoxLayout, QVBoxLayout, QPushButton,
     QLabel, QLineEdit, QCheckBox, QTabWidget, QPlainTextEdit, QFileDialog,
-    QFrame, QGroupBox, QSpinBox, QMessageBox
+    QFrame, QGroupBox, QSpinBox, QMessageBox, QSplitter, QTreeView, 
+    QFileSystemModel, QHeaderView, QMenu, QAbstractItemView, QStyle
 )
-from PySide6.QtGui import QColor, QPainter, QTextCursor, QFont, QIntValidator
-from PySide6.QtCore import Qt, QThread, Signal, Slot
+from PySide6.QtGui import (
+    QColor, QPainter, QTextCursor, QFont, QIntValidator, 
+    QAction, QStandardItemModel, QStandardItem
+)
+from PySide6.QtCore import Qt, QThread, Signal, Slot, QDir
 
 # Elftools Import
 try:
     from elftools.elf.elffile import ELFFile
 except ImportError:
     print("Error: 'pyelftools' not installed. Please run 'pip install pyelftools'")
-    sys.exit(1)
+    pass # Continue running so FTP still works
 
 # ==========================================
 # 1. UTILS & INDENT
@@ -323,8 +329,138 @@ class ElfParserObj:
         return out.strip().decode('utf-8')
 
 # ==========================================
-# 3. BACKGROUND THREADS
+# 3. BACKGROUND THREADS & FTP
 # ==========================================
+
+class FtpWorker(QThread):
+    """Handles FTP operations in background to keep UI responsive"""
+    status_signal = Signal(str, str) # status_msg, color_code
+    listing_signal = Signal(list)    # list of items for the model
+    progress_signal = Signal(str)    # Transfer details
+    finished_signal = Signal()
+    
+    def __init__(self):
+        super().__init__()
+        self.ftp = None
+        self.host = ""
+        self.port = 1337
+        self.current_path = "/"
+        self.command_queue = [] 
+        self.running = True
+        self.mutex = threading.Lock()
+
+    def add_command(self, cmd, *args):
+        with self.mutex:
+            self.command_queue.append((cmd, args))
+
+    def run(self):
+        while self.running:
+            if self.command_queue:
+                with self.mutex:
+                    cmd, args = self.command_queue.pop(0)
+                
+                try:
+                    if cmd == 'connect':
+                        self._do_connect(args[0], args[1])
+                    elif cmd == 'list':
+                        self._do_list(args[0])
+                    elif cmd == 'upload':
+                        self._do_upload(args[0], args[1])
+                    elif cmd == 'download':
+                        self._do_download(args[0], args[1])
+                    elif cmd == 'mk_dir':
+                        self._do_mkdir(args[0])
+                except Exception as e:
+                    self.status_signal.emit(f"FTP Error: {str(e)}", "red")
+                    self.progress_signal.emit("Error")
+            
+            time.sleep(0.1)
+
+    def _do_connect(self, ip, port):
+        self.status_signal.emit(f"Connecting to {ip}:{port}...", "orange")
+        try:
+            self.ftp = ftplib.FTP()
+            self.ftp.connect(ip, int(port), timeout=10)
+            self.ftp.login() 
+            self.host = ip
+            self.status_signal.emit(f"Connected to Console @ {ip}", "#3ecf4c") 
+            self.progress_signal.emit("Idle")
+            self._do_list("/")
+        except Exception as e:
+            self.status_signal.emit(f"Connection Failed: {e}", "red")
+
+    def _do_list(self, path):
+        if not self.ftp: return
+        try:
+            self.ftp.cwd(path)
+            self.current_path = path
+            
+            entries = []
+            lines = []
+            self.ftp.dir(lines.append)
+            
+            for line in lines:
+                parts = line.split()
+                if len(parts) < 9: continue
+                
+                name = " ".join(parts[8:])
+                is_dir = line.startswith('d')
+                size = parts[4]
+                date = f"{parts[5]} {parts[6]} {parts[7]}"
+                
+                if name == "." or name == "..": continue
+                
+                entries.append({
+                    "name": name,
+                    "is_dir": is_dir,
+                    "size": size,
+                    "date": date
+                })
+            
+            entries.sort(key=lambda x: (not x['is_dir'], x['name']))
+            self.listing_signal.emit(entries)
+            
+        except Exception as e:
+            self.status_signal.emit(f"List Error: {e}", "orange")
+
+    def _do_upload(self, local_path, remote_name):
+        if not self.ftp: return
+        try:
+            self.progress_signal.emit(f"Uploading {remote_name}...")
+            with open(local_path, 'rb') as f:
+                self.ftp.storbinary(f'STOR {remote_name}', f)
+            self.status_signal.emit(f"Upload Complete: {remote_name}", "#3ecf4c")
+            self.progress_signal.emit("Idle")
+            self._do_list(self.current_path) 
+        except Exception as e:
+            self.status_signal.emit(f"Upload Error: {e}", "red")
+
+    def _do_download(self, remote_name, local_path):
+        if not self.ftp: return
+        try:
+            self.progress_signal.emit(f"Downloading {remote_name}...")
+            local_filename = os.path.join(local_path, remote_name)
+            with open(local_filename, 'wb') as f:
+                self.ftp.retrbinary(f'RETR {remote_name}', f.write)
+            self.status_signal.emit(f"Download Complete: {remote_name}", "#3ecf4c")
+            self.progress_signal.emit("Idle")
+        except Exception as e:
+            self.status_signal.emit(f"Download Error: {e}", "red")
+
+    def _do_mkdir(self, folder_name):
+        if not self.ftp: return
+        try:
+            self.ftp.mkd(folder_name)
+            self._do_list(self.current_path)
+        except Exception as e:
+            self.status_signal.emit(f"Mkdir Error: {e}", "red")
+
+    def stop(self):
+        self.running = False
+        if self.ftp:
+            try: self.ftp.quit()
+            except: pass
+        self.wait()
 
 class DumpParserThread(QThread):
     output_signal = Signal(str)
@@ -344,7 +480,6 @@ class DumpParserThread(QThread):
             self.emit_log(f"--- Starting Analysis ---\nCore: {self.core_file}\nELF: {self.elf_file}\nSDK Path: {self.sdk_path}\n")
             
             core = CoreParser(self.core_file)
-            # Pass SDK path to ELF Parser
             elf = ElfParserObj(self.elf_file, self.sdk_path)
 
             str_stop_reason = defaultdict(str, {
@@ -478,7 +613,7 @@ class LogServerThread(QThread):
         self.wait()
 
 # ==========================================
-# 4. MAIN UI APPLICATION
+# 4. MAIN UI APPLICATION (CONTINUED)
 # ==========================================
 
 class ColorDot(QFrame):
@@ -574,8 +709,8 @@ class VitaDeckModern(QWidget):
         # Tab 4: File transfer
         ft_tab = QWidget()
         ft_layout = QVBoxLayout(ft_tab)
-        ft_layout.addWidget(QLabel("File transfer details go here..."))
-        self.tabs.addTab(ft_tab, "File transfer")
+        self.setup_ftp_tab(ft_layout)
+        self.tabs.addTab(ft_tab, "File Transfer")
 
         # Tab 5: Settings
         st_tab = QWidget()
@@ -605,7 +740,7 @@ class VitaDeckModern(QWidget):
 
         sb.addSpacing(12)
         sb.addWidget(QLabel("Run executable"))
-        self.exec_entry = QLineEdit("D:/Repos/demos/test/bu")
+        self.exec_entry = QLineEdit("D:/game/build/eboot.bin")
         sb.addWidget(self.exec_entry)
         self.appid_entry = QLineEdit("APPL00001")
         sb.addWidget(self.appid_entry)
@@ -636,6 +771,13 @@ class VitaDeckModern(QWidget):
         status_bar.addWidget(self.ft_label)
         status_bar.addStretch()
         main_layout.addLayout(status_bar)
+
+        # Initialize FTP Worker
+        self.ftp_thread = FtpWorker()
+        self.ftp_thread.status_signal.connect(self.update_connection_status)
+        self.ftp_thread.listing_signal.connect(self.update_remote_view)
+        self.ftp_thread.progress_signal.connect(self.update_transfer_status)
+        self.ftp_thread.start()
 
         self.apply_style()
         self.update_font(0) 
@@ -832,8 +974,215 @@ class VitaDeckModern(QWidget):
         self.log_output.insertPlainText(text)
         self.log_output.moveCursor(QTextCursor.End)
 
+    # ==========================
+    #  FTP TAB LOGIC
+    # ==========================
+
+    def setup_ftp_tab(self, layout):
+        # 1. Connection Bar
+        conn_bar = QHBoxLayout()
+        conn_bar.addWidget(QLabel("PS Vita IP:"))
+        
+        current_ip = self.ip_entry.text() if hasattr(self, 'ip_entry') else "192.168.1.21"
+        self.ftp_ip_input = QLineEdit(current_ip)
+        conn_bar.addWidget(self.ftp_ip_input)
+        
+        conn_bar.addWidget(QLabel("Port:"))
+        self.ftp_port_input = QLineEdit("1337") 
+        self.ftp_port_input.setFixedWidth(60)
+        conn_bar.addWidget(self.ftp_port_input)
+        
+        self.btn_ftp_connect = QPushButton("Connect")
+        self.btn_ftp_connect.clicked.connect(self.ftp_connect)
+        conn_bar.addWidget(self.btn_ftp_connect)
+        
+        conn_bar.addStretch()
+        layout.addLayout(conn_bar)
+        
+        layout.addWidget(QFrame(frameShape=QFrame.HLine))
+
+        # 2. Split View (Local vs Remote)
+        splitter = QSplitter(Qt.Horizontal)
+        
+        # --- LEFT: LOCAL ---
+        local_widget = QWidget()
+        local_layout = QVBoxLayout(local_widget)
+        local_layout.addWidget(QLabel("Local Site:"))
+        
+        self.local_model = QFileSystemModel()
+        self.local_model.setRootPath(QDir.rootPath())
+        
+        self.local_tree = QTreeView()
+        self.local_tree.setModel(self.local_model)
+        self.local_tree.setRootIndex(self.local_model.index(os.path.expanduser("~"))) 
+        self.local_tree.setColumnWidth(0, 200)
+        self.local_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        local_layout.addWidget(self.local_tree)
+        
+        # --- MIDDLE: BUTTONS ---
+        btn_layout = QVBoxLayout()
+        btn_layout.addStretch()
+        self.btn_upload = QPushButton("Upload ->")
+        self.btn_upload.clicked.connect(self.ftp_upload_selected)
+        btn_layout.addWidget(self.btn_upload)
+        
+        self.btn_download = QPushButton("<- Download")
+        self.btn_download.clicked.connect(self.ftp_download_selected)
+        btn_layout.addWidget(self.btn_download)
+        btn_layout.addStretch()
+        
+        btn_container = QWidget()
+        btn_container.setLayout(btn_layout)
+
+        # --- RIGHT: REMOTE ---
+        remote_widget = QWidget()
+        remote_layout = QVBoxLayout(remote_widget)
+        remote_layout.addWidget(QLabel("Remote Site:"))
+        
+        self.remote_model = QStandardItemModel()
+        self.remote_model.setHorizontalHeaderLabels(["Filename", "Size", "Date"])
+        
+        self.remote_tree = QTreeView()
+        self.remote_tree.setModel(self.remote_model)
+        self.remote_tree.doubleClicked.connect(self.remote_double_click)
+        self.remote_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.remote_tree.customContextMenuRequested.connect(self.show_remote_context_menu)
+        self.remote_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        remote_layout.addWidget(self.remote_tree)
+
+        splitter.addWidget(local_widget)
+        splitter.addWidget(btn_container)
+        splitter.addWidget(remote_widget)
+        splitter.setSizes([400, 50, 400])
+        
+        layout.addWidget(splitter)
+
+    def ftp_connect(self):
+        ip = self.ftp_ip_input.text()
+        port = self.ftp_port_input.text()
+        self.ftp_thread.add_command('connect', ip, port)
+        self.btn_ftp_connect.setEnabled(False)
+        self.btn_ftp_connect.setText("Connecting...")
+
+    @Slot(str, str)
+    def update_connection_status(self, msg, color_code):
+        # Update Bottom Bar
+        self.conn_label.setText(msg)
+        self.conn_dot.set_color(color_code)
+        self.conn_label.setStyleSheet(f"color: {color_code}; font-weight: bold;")
+        
+        if "Connected" in msg:
+            self.btn_ftp_connect.setText("Connected")
+            self.btn_ftp_connect.setStyleSheet("background-color: #2e7d32; color: white;")
+        elif "Failed" in msg or "Error" in msg:
+            self.btn_ftp_connect.setEnabled(True)
+            self.btn_ftp_connect.setText("Connect")
+            self.btn_ftp_connect.setStyleSheet("")
+
+    @Slot(list)
+    def update_remote_view(self, entries):
+        self.remote_model.removeRows(0, self.remote_model.rowCount())
+        
+        # Add ".." for going up
+        if self.ftp_thread.current_path != "/":
+            up_item = QStandardItem("..")
+            up_item.setData("dir", Qt.UserRole)
+            self.remote_model.appendRow([up_item, QStandardItem(""), QStandardItem("")])
+
+        file_icon = self.style().standardIcon(QStyle.SP_FileIcon)
+        dir_icon = self.style().standardIcon(QStyle.SP_DirIcon)
+
+        for entry in entries:
+            name_item = QStandardItem(entry['name'])
+            name_item.setEditable(False)
+            
+            if entry['is_dir']:
+                name_item.setIcon(dir_icon)
+                name_item.setData("dir", Qt.UserRole)
+            else:
+                name_item.setIcon(file_icon)
+                name_item.setData("file", Qt.UserRole)
+                
+            size_item = QStandardItem(str(entry['size']))
+            date_item = QStandardItem(entry['date'])
+            
+            self.remote_model.appendRow([name_item, size_item, date_item])
+
+    def remote_double_click(self, index):
+        name_idx = index.siblingAtColumn(0)
+        item = self.remote_model.itemFromIndex(name_idx)
+        name = item.text()
+        type_data = item.data(Qt.UserRole)
+        
+        if name == "..":
+            # Go Up
+            new_path = os.path.dirname(self.ftp_thread.current_path.rstrip('/'))
+            if not new_path: new_path = "/"
+            self.ftp_thread.add_command('list', new_path)
+            
+        elif type_data == "dir":
+            # Go Down
+            current = self.ftp_thread.current_path
+            if current == "/": new_path = "/" + name
+            else: new_path = current + "/" + name
+            self.ftp_thread.add_command('list', new_path)
+
+    def ftp_upload_selected(self):
+        indexes = self.local_tree.selectionModel().selectedIndexes()
+        if not indexes: return
+        
+        paths = []
+        for idx in indexes:
+            if idx.column() == 0:
+                paths.append(self.local_model.filePath(idx))
+        
+        for path in paths:
+            if os.path.isfile(path):
+                filename = os.path.basename(path)
+                self.ftp_thread.add_command('upload', path, filename)
+            elif os.path.isdir(path):
+                QMessageBox.information(self, "Info", "Folder upload not implemented in this demo.")
+
+    def ftp_download_selected(self):
+        indexes = self.remote_tree.selectionModel().selectedIndexes()
+        if not indexes: return
+        
+        local_dest = self.local_model.filePath(self.local_tree.currentIndex())
+        if os.path.isfile(local_dest):
+            local_dest = os.path.dirname(local_dest)
+        if not local_dest:
+            local_dest = os.getcwd()
+            
+        for idx in indexes:
+            if idx.column() == 0:
+                item = self.remote_model.itemFromIndex(idx)
+                if item.text() == "..": continue
+                
+                if item.data(Qt.UserRole) == "file":
+                    self.ftp_thread.add_command('download', item.text(), local_dest)
+
+    def show_remote_context_menu(self, pos):
+        menu = QMenu()
+        download_action = QAction("Download", self)
+        download_action.triggered.connect(self.ftp_download_selected)
+        menu.addAction(download_action)
+        menu.exec(self.remote_tree.viewport().mapToGlobal(pos))
+
+    @Slot(str)
+    def update_transfer_status(self, status):
+        self.ft_label.setText(status)
+        if "Uploading" in status or "Downloading" in status:
+            self.ft_dot.set_color("#ff9900") # Orange
+            self.ft_label.setStyleSheet("color: #ff9900;")
+        elif "Error" in status:
+            self.ft_dot.set_color("red")
+        else:
+            self.ft_dot.set_color("#777")
+            self.ft_label.setStyleSheet("color: #777;")
+
     def closeEvent(self, event):
         if self.log_thread: self.log_thread.stop()
+        if self.ftp_thread: self.ftp_thread.stop()
         event.accept()
 
     def apply_style(self):
