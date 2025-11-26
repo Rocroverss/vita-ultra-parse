@@ -1,0 +1,13 @@
+{
+    "vita_ip": "192.168.0.21",
+    "vita_port": 1337,
+    "log_port": 8080,
+    "sdk_path": "/usr/local/vitasdk",
+    "dump_folder": "C:\\Users\\rocro\\Desktop\\vita-ultra-parse",
+    "last_build_dir": "C:\\Users\\rocro\\Desktop\\vita-ultra-parse",
+    "launch_title_id": "VHBB00001",
+    "font_size": 10,
+    "exec_path": "C:\\Users\\rocro\\Desktop\\vita-ultra-parse\\eboot.bin",
+    "target_app_id": "PCSG00000",
+    "log_font_size": 13
+}
