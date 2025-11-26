@@ -741,15 +741,16 @@ class DumpParserThread(QThread):
                 iprint("\nREGISTERS:", color=COLOR_TEAL)
                 with IndentManager(): # Level 1 Indentation for Registers
                     if thread.regs:
-                        for x in range(16):
+                        # FIX: Loop only through R0 (0) to SP (13), skipping LR (14) and PC (15) 
+                        # as they will be printed symbolically below.
+                        for x in range(14): 
                             reg = reg_names.get(x, f"R{x}")
                             # Valores de Registros (ORANGE label, WHITE value)
                             html_line = f'<span style="color:{COLOR_ORANGE};">{reg}: </span>'
                             html_line += f'<span style="color:{COLOR_ADDR_BASE};">0x{thread.regs.gpr[x]:x}</span>'
                             iprint(html_line, color=COLOR_ORANGE)
                         
-                        # PC/LR Simbólicos (Green/White) - Already at Level 1, no further indent needed
-                        # The symbolic notation is printed here, using the SYM_NAME color for the label part
+                        # PC/LR Simbólicos (Green/White) - Symbolic notation replaces raw values for LR and PC
                         iprint(pc.to_string(self.elf_parser), color=COLOR_SYM_NAME)
                         iprint(lr.to_string(self.elf_parser), color=COLOR_SYM_NAME)
                     else:
