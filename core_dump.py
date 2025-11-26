@@ -1,19 +1,24 @@
 # core_dump.py
 # Fully integrated Vita Crash Dump Analyzer for Python 3 / PySide6
-# Includes colorized output.
+# Includes colorized output, save functionality, and FTP crash fetching.
 
 import os
 import sys
 import struct
 import subprocess
 import gzip
+import shutil 
+import ftplib 
+import threading 
+import time 
+from datetime import datetime 
 from collections import defaultdict
 import traceback
 
-# Importaciones de PySide6 (ajustadas para usar QTextEdit y el flag de Qt)
+# Importaciones de PySide6
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-                               QLabel, QTextEdit, QFileDialog, QMessageBox) 
-from PySide6.QtCore import QThread, Signal, Slot, Qt
+                               QLabel, QTextEdit, QFileDialog, QMessageBox, QInputDialog) 
+from PySide6.QtCore import QThread, Signal, Slot, Qt, QDir 
 from PySide6.QtGui import QTextCursor
 
 # ==========================================
@@ -21,17 +26,15 @@ from PySide6.QtGui import QTextCursor
 # ==========================================
 
 # --- COLOR DEFINITIONS (HTML HEX CODES) ---
-COLOR_RED = "#F44747"       # Crash/Error information
-COLOR_YELLOW = "#FFD700"    # General labels (ID:, Status:, etc.) - Strong Gold
-COLOR_GREY = "#D4D4D4"      # General text, non-highlighted output
-COLOR_BLUE = "#569CD6"      # Reserved
-COLOR_TEAL = "#00FFFF"      # New color for headers (Bright Cyan)
-COLOR_ORANGE = "#FF8C00"    # New color for registers
-
-# Colores para el contraste solicitado:
-COLOR_THREAD_NAME = "#4EC9B0" # Nuevo color para nombres de hilos (Teal/Aqua)
-COLOR_SYM_NAME = "#85C664"    # Nuevo color para la estructura simbólica (Brighter Green)
-COLOR_ADDR_BASE = "#FFFFFF"   # Nuevo color para los valores de dirección (White)
+COLOR_RED = "#F44747"       
+COLOR_YELLOW = "#FFD700"    
+COLOR_GREY = "#D4D4D4"      
+COLOR_BLUE = "#569CD6"      
+COLOR_TEAL = "#00FFFF"      
+COLOR_ORANGE = "#FF8C00"    
+COLOR_THREAD_NAME = "#4EC9B0" 
+COLOR_SYM_NAME = "#85C664"    
+COLOR_ADDR_BASE = "#FFFFFF"   
 
 _log_callback = None
 _indent_level = 0
@@ -48,12 +51,10 @@ def iprint(*args, color=COLOR_GREY, **kwargs):
     """Indent-aware print to log callback, supporting HTML coloring, ensuring line breaks."""
     global _log_callback
     
-    # FIX: Use &nbsp; to force space rendering in HTML for indentation.
     prefix = ("&nbsp;&nbsp;&nbsp;&nbsp;" * _indent_level)
     
     text = " ".join(str(a) for a in args)
     
-    # Maneja llamadas vacías (iprint()) para un simple salto de línea.
     if not text.strip() and not _indent_level:
         if _log_callback:
             _log_callback("<br>", is_html=True)
@@ -62,32 +63,24 @@ def iprint(*args, color=COLOR_GREY, **kwargs):
     out = text
     html_out = ""
     
-    # Dividir por nueva línea para procesar la sangría y '!!!' por línea
     out_lines = out.split('\n')
     
     for line in out_lines:
         line_stripped = line.strip()
         line_color = color
         
-        # Regla: Las líneas que empiezan/terminan con '!!!' son siempre ROJAS
         if line_stripped.startswith('!!!') and line_stripped.endswith('!!!'):
             line_color = COLOR_RED
 
-        # Si la línea tiene contenido
         if line or (len(out_lines) > 1 and not line.strip()):
             
-            # Si el texto ya contiene HTML (ej. de VitaAddress.to_string o llamadas manuales)
             if '<span' in line and color != COLOR_GREY:
-                # FIX: Añadir el prefijo &nbsp; solo una vez al comienzo de la línea HTML
                 html_out += prefix + line + '<br>'
             else:
-                # Envolver toda la línea (incluyendo la sangría/prefijo) en el color solicitado + <br>
                 html_out += f'<span style="color:{line_color};">{prefix}{line}</span><br>'
         else:
-            # Línea vacía que no es solo un resultado de un split de una cadena multilínea
             pass
 
-    # Enviar HTML a la GUI
     if _log_callback:
         if not html_out.endswith('<br>'):
             html_out += '<br>'
@@ -95,10 +88,8 @@ def iprint(*args, color=COLOR_GREY, **kwargs):
         try:
             _log_callback(html_out, is_html=True)
         except Exception:
-            # Fallback para errores/QTextEdit faltante
             print(out, end="\n")
     else:
-        # Fallback para depuración CLI
         print(out, end="\n")
 
 
@@ -138,23 +129,32 @@ def c_str(data, offset=0):
         return sub.decode('utf-8', errors='ignore')
 
 # ==========================================
-# SETTINGS MOCK
+# SETTINGS MOCK (Adjusted for separate IP/Port)
 # ==========================================
-class _Settings:
-    def __init__(self):
-        self._d = {"sdk_path": os.environ.get("VITA_SDK_PATH", ""),
-                   "dump_folder": os.getcwd()}
 
-    def get(self, key, default=None):
-        return self._d.get(key, default)
+try:
+    from utils import settings
+except ImportError:
+    class _Settings:
+        def __init__(self):
+            # Adjusted mock to use separate IP and Port, mirroring settings.json
+            self._d = {"sdk_path": os.environ.get("VITA_SDK_PATH", ""),
+                       "dump_folder": os.getcwd(),
+                       "vita_ip": "192.168.1.100", # Mocked IP
+                       "vita_port": 1337,        # Mocked Port
+                       "last_build_dir": os.getcwd()} 
 
-    def set(self, key, value):
-        self._d[key] = value
+        def get(self, key, default=None):
+            return self._d.get(key, default)
 
-settings = _Settings()
+        def set(self, key, value):
+            self._d[key] = value
+    settings = _Settings()
+
 
 # ==========================================
 # ELF PARSING (pyelftools with Fallback)
+# (Classes are kept here for full file)
 # ==========================================
 try:
     from elftools.elf.elffile import ELFFile
@@ -163,7 +163,6 @@ except ImportError:
     HAS_PYELFTOOLS = False
     ELFFile = None
 
-# Fallback classes for when pyelftools is missing
 class _SegmentHeader:
     def __init__(self, p_type, p_offset, p_vaddr, p_filesz, p_flags):
         self.p_type = p_type
@@ -181,7 +180,6 @@ class SimpleSegment:
         return self._data
 
     def iter_notes(self):
-        """Parse ELF notes manually."""
         data = self._data
         off = 0
         notes = []
@@ -204,7 +202,6 @@ class SimpleSegment:
         return notes
 
 class SimpleELFFile:
-    """Minimal ELF32 parser fallback."""
     def __init__(self, fileobj):
         self._f = fileobj
         self._parse_header()
@@ -247,10 +244,6 @@ def GetELFParser(fileobj):
         return ELFFile(fileobj)
     else:
         return SimpleELFFile(fileobj)
-
-# ==========================================
-# DATA MODELS (VITA STRUCTS)
-# ==========================================
 
 class VitaThread:
     def __init__(self, data):
@@ -315,45 +308,32 @@ class VitaAddress:
 
         if self.is_located():
             iprint()
-            # Título de Desensamblaje es AMARILLO, pero el prefijo es GREEN para la estructura
             iprint(f"DISASSEMBLY AROUND {self.__symbol}: 0x{addr_to_display:x} ({state}):", color=COLOR_YELLOW)
-            try:
-                # La salida del desensamblaje será GRIS/ROJO
-                elf_parser.disas_around_addr(self.__offset, self.__vaddr)
-            except Exception as e:
-                # Mensajes de error son GRISES
-                iprint(f"[Disassembly failed: {str(e)}]", color=COLOR_GREY)
-                iprint("[Ensure Vita SDK is in PATH or set in settings]", color=COLOR_GREY)
+            with IndentManager():
+                try:
+                    elf_parser.disas_around_addr(self.__offset, self.__vaddr)
+                except Exception as e:
+                    iprint(f"[Disassembly failed: {str(e)}]", color=COLOR_GREY)
+                    iprint("[Ensure Vita SDK is in PATH or set in settings]", color=COLOR_GREY)
 
     def to_string(self, elf_parser=None, include_symbol=True):
-        """
-        Returns HTML string with colors for symbolic address (Green structure, White numbers).
-        If include_symbol is False, it omits the "PC: " or "LR: " prefix (used for stack values).
-        """
         vaddr_color = COLOR_ADDR_BASE 
         output = ""
         
-        # FIX: Only print the symbol (PC:, LR:, R0:, etc.) if requested
         if include_symbol:
             output = f'<span style="color:{COLOR_SYM_NAME};">{self.__symbol}: </span>'
         
-        # Dirección (White)
         output += f'<span style="color:{vaddr_color};">0x{self.__vaddr:x}</span>'
         
         if self.is_located():
-            # Módulo/Segmento/Offset (Green)
             output += f'<span style="color:{COLOR_SYM_NAME};"> ({self.__module.name}@{self.__segment.num} + </span>'
-            
-            # Offset (White)
             output += f'<span style="color:{vaddr_color};">0x{self.__offset:x}</span>'
             
             line_info = ""
-            # Intentar obtener número de línea
             if elf_parser and self.__module.name.endswith(".elf") and self.__segment.num == 1:
                 try:
                     line_info = elf_parser.addr2line(self.__offset)
                     if line_info:
-                        # Información de línea (Green)
                         line_info = f'<span style="color:{COLOR_SYM_NAME};"> => {line_info}</span>'
                 except Exception:
                     pass
@@ -367,10 +347,6 @@ class CoreSegment:
         self.vaddr = vaddr
         self.data = data
         self.size = len(data)
-
-# ==========================================
-# CORE PARSER
-# ==========================================
 
 class CoreParser:
     def __init__(self, filename):
@@ -494,9 +470,7 @@ class CoreParser:
                 return segment.data[local_addr:local_addr+size]
         return None
 
-# ==========================================
-# ELF PARSER
-# ==========================================
+# ELF PARSER (ElfParserObj) remains here...
 
 class ElfParserObj:
     def __init__(self, filename, sdk_path=None):
@@ -563,7 +537,6 @@ class ElfParserObj:
             args += ['-Mforce-thumb']
 
         try:
-            # Added stderr=subprocess.DEVNULL to clean up objdump output
             output = subprocess.check_output(args, stderr=subprocess.DEVNULL) 
             text_output = output.decode('utf-8', errors='replace')
             lines = text_output.splitlines()
@@ -576,15 +549,12 @@ class ElfParserObj:
                     keep = True
                     continue
                 if keep:
-                    # Highlight the specific instruction with the '!!!' markers
                     if f"{abs_addr:x}:" in line:
-                        # Clean up tabs/spaces before adding markers
                         line = line.strip()
                         line = "!!! " + line + " !!!"
                     final_lines.append(line)
 
             if final_lines:
-                # iprint handles the default GREY color and the RED '!!!' color.
                 iprint("\n".join(final_lines))
             else:
                 iprint("(No disassembly output found)", color=COLOR_GREY)
@@ -592,7 +562,6 @@ class ElfParserObj:
         except FileNotFoundError:
             raise FileNotFoundError(f"Tool not found: {cmd}")
         except subprocess.CalledProcessError as e:
-            # Use GREY for tool errors
             iprint(f"Objdump error: {e.output.decode('utf-8', errors='replace')}", color=COLOR_GREY)
 
     def addr2line(self, offset):
@@ -619,7 +588,7 @@ class ElfParserObj:
             return ""
 
 # ==========================================
-# GUI / WORKER
+# WORKERS / THREADS
 # ==========================================
 
 class DumpParserThread(QThread):
@@ -635,7 +604,6 @@ class DumpParserThread(QThread):
         self.elf_parser = None
 
     def emit_log(self, text, is_html=False):
-        """Sends output to the main thread's log window."""
         self.output_signal.emit(str(text), is_html)
 
     def run(self):
@@ -644,11 +612,10 @@ class DumpParserThread(QThread):
 
         self.progress_signal.emit("Parsing...")
         try:
-            # Colores de información de inicio (GREY)
             iprint("--- Starting Analysis ---", color=COLOR_GREY)
             iprint(f"Core: {self.core_file}", color=COLOR_GREY)
             iprint(f"ELF: {self.elf_file}", color=COLOR_GREY)
-            iprint(f"SDK: {self.sdk_path or 'System PATH'}") # Salto de linea automatico
+            iprint(f"SDK: {self.sdk_path or 'System PATH'}") 
             iprint()
 
             core = CoreParser(self.core_file)
@@ -668,65 +635,50 @@ class DumpParserThread(QThread):
             })
             reg_names = {13: "SP", 14: "LR", 15: "PC"}
 
-            # Encabezado principal (TEAL/CYAN)
             iprint("=== THREADS ===", color=COLOR_TEAL)
             crashed = []
 
-            # Listar todos los hilos
-            with IndentManager(): # Level 1 Indentation for Thread Name
+            with IndentManager():
                 for thread in core.threads:
                     if thread.stop_reason != 0:
                         crashed.append(thread)
 
-                    # Nombre del hilo (THREAD_NAME)
                     iprint(thread.name, color=COLOR_THREAD_NAME) 
                     
-                    with IndentManager(): # Level 2 Indentation for details
-                        # Información general (YELLOW para la etiqueta, ADDR_BASE/RED para el valor)
-                        
-                        # ID (Yellow label, White value)
+                    with IndentManager(): 
                         iprint(f"ID: <span style=\"color:{COLOR_ADDR_BASE};\">0x{thread.uid:x}</span>", color=COLOR_YELLOW)
                         
-                        # Razón de detención (Yellow label, dynamic color value)
                         reason_str = str_stop_reason[thread.stop_reason]
-                        
                         reason_color = COLOR_YELLOW
                         if "abort" in reason_str or "instruction" in reason_str:
                             reason_color = COLOR_RED
                         
-                        # Usar iprint con HTML para mantener la sangría y el formato
                         html_line = f'<span style="color:{COLOR_YELLOW};">Stop reason: </span>'
                         html_line += f'<span style="color:{COLOR_ADDR_BASE};">0x{thread.stop_reason:x} (</span>'
                         html_line += f'<span style="color:{reason_color};">{reason_str}</span>'
                         html_line += f'<span style="color:{COLOR_ADDR_BASE};">)</span>'
-                        iprint(html_line, color=COLOR_YELLOW) # Usar COLOR_YELLOW para el color general/prefijo
+                        iprint(html_line, color=COLOR_YELLOW)
 
-                        # Estado (Yellow label, White value)
                         status_str = str_status[thread.status]
                         html_line = f'<span style="color:{COLOR_YELLOW};">Status: </span>'
                         html_line += f'<span style="color:{COLOR_ADDR_BASE};">0x{thread.status:x} ({status_str})</span>'
                         iprint(html_line, color=COLOR_YELLOW)
 
-                        # PC/LR (Yellow label, Green/White symbolic structure)
                         pc = core.get_address_notation("PC", thread.pc)
                         lr = core.get_address_notation("LR", thread.regs.gpr[14] if thread.regs else 0)
                         
-                        # PC (Label is part of VitaAddress, color is SYM_NAME)
-                        iprint(pc.to_string(self.elf_parser), color=COLOR_SYM_NAME) # Using SYM_NAME for the label part
+                        iprint(pc.to_string(self.elf_parser), color=COLOR_SYM_NAME)
                         
-                        # Only print LR if it's different from PC
                         if lr.to_string(self.elf_parser) != pc.to_string(self.elf_parser):
                             iprint(lr.to_string(self.elf_parser), color=COLOR_SYM_NAME)
 
 
             iprint()
 
-            # Información detallada del crash
             for thread in crashed:
                 reason = str_stop_reason[thread.stop_reason]
                 reason_color = COLOR_RED
                 
-                # Encabezado de Crash (GREY + RED reason)
                 html_line = f'<span style="color:{COLOR_GREY};">=== THREAD "{thread.name}" </span>'
                 html_line += f'<span style="color:{COLOR_ADDR_BASE};"><0x{thread.uid:x}></span>'
                 html_line += f'<span style="color:{COLOR_GREY};"> CRASHED (</span>'
@@ -735,30 +687,26 @@ class DumpParserThread(QThread):
                 iprint(html_line, color=COLOR_GREY) 
 
                 pc = core.get_address_notation('PC', thread.regs.gpr[15] if thread.regs else thread.pc)
+                lr = core.get_address_notation('LR', thread.regs.gpr[14] if thread.regs else 0)
+                
                 pc.print_disas_if_available(self.elf_parser)
 
-                # Encabezado de Registros (TEAL/CYAN)
                 iprint("\nREGISTERS:", color=COLOR_TEAL)
-                with IndentManager(): # Level 1 Indentation for Registers
+                with IndentManager():
                     if thread.regs:
-                        # FIX: Loop only through R0 (0) to SP (13), skipping LR (14) and PC (15) 
-                        # as they will be printed symbolically below.
                         for x in range(14): 
                             reg = reg_names.get(x, f"R{x}")
-                            # Valores de Registros (ORANGE label, WHITE value)
                             html_line = f'<span style="color:{COLOR_ORANGE};">{reg}: </span>'
                             html_line += f'<span style="color:{COLOR_ADDR_BASE};">0x{thread.regs.gpr[x]:x}</span>'
                             iprint(html_line, color=COLOR_ORANGE)
                         
-                        # PC/LR Simbólicos (Green/White) - Symbolic notation replaces raw values for LR and PC
                         iprint(pc.to_string(self.elf_parser), color=COLOR_SYM_NAME)
                         iprint(lr.to_string(self.elf_parser), color=COLOR_SYM_NAME)
                     else:
                         iprint("No register info available.", color=COLOR_GREY)
 
-                # Encabezado de Stack (TEAL/CYAN)
                 iprint("\nSTACK CONTENTS AROUND SP:", color=COLOR_TEAL)
-                with IndentManager(): # Level 1 Indentation for Stack
+                with IndentManager():
                     if thread.regs:
                         sp = thread.regs.gpr[13]
                         stack_range = 24
@@ -769,19 +717,13 @@ class DumpParserThread(QThread):
                                 val = u32(data, 0)
                                 prefix = "          "
                                 
-                                # 1. Prepare the stack address label (SP => 0x...)
                                 if addr == sp:
                                     prefix = "SP => "
                                 
-                                # 2. Prepare the stack *value* notation
-                                # We pass an empty symbol here, as we only want the symbolic module info for the value (val)
                                 data_notation = core.get_address_notation("", val) 
                                 
-                                # 3. Combine and print
-                                # Stack Address Label: Green for prefix, White for address
                                 html_line = f'<span style="color:{COLOR_SYM_NAME};">{prefix}</span>'
                                 html_line += f'<span style="color:{COLOR_ADDR_BASE};">0x{addr:x}: </span>'
-                                # Stack Value Notation: Call to_string with include_symbol=False to prevent duplication
                                 html_line += data_notation.to_string(self.elf_parser, include_symbol=False) 
                                 
                                 iprint(html_line, color=COLOR_SYM_NAME)
@@ -799,15 +741,136 @@ class DumpParserThread(QThread):
         self.emit_log(f'<br><span style="color:{COLOR_GREY};">--- Analysis Finished ---</span><br>', is_html=True)
         self.finished_signal.emit()
 
+# --- NEW: CrashFetchThread (FIXED FTP PORT) ---
+class CrashFetchThread(QThread):
+    progress_signal = Signal(str, bool) # Text, is_html
+    error_signal = Signal(str)
+    fetched_files_signal = Signal(str, str) # elf_path, core_path
+    
+    # __init__ adjusted to take separate IP and Port
+    def __init__(self, vita_ip, vita_port, build_dir, parent=None):
+        super().__init__(parent)
+        self.vita_ip = vita_ip
+        self.vita_port = vita_port
+        self.build_dir = build_dir
+        self.temp_core_path = None
+
+    def run(self):
+        # 1. Get IP and Port from instance variables
+        ip = self.vita_ip
+        port = self.vita_port
+        
+        if not ip or not port:
+            self.error_signal.emit("Vita IP or Port not configured in settings.")
+            return
+
+        # Log now uses the correct port from settings
+        self.progress_signal.emit(f"Connecting to <b>{ip}:{port}</b>...", True)
+        
+        # 2. Connect to FTP
+        ftp = None
+        try:
+            ftp = ftplib.FTP()
+            # Explicitly use the configured IP and Port
+            ftp.connect(ip, int(port), timeout=10)
+            ftp.login() 
+
+            self.progress_signal.emit("Connected. Searching for latest crash dump...", False)
+            
+            # 3. Find latest crash dump in ux0:/data/crash
+            crash_dir = "ux0:/data/crash"
+            ftp.cwd(crash_dir)
+            
+            lines = []
+            ftp.retrlines("LIST", lines.append)
+            
+            latest_file = None
+            latest_timestamp = 0
+            
+            for line in lines:
+                parts = line.split()
+                if len(parts) >= 8 and parts[-1].endswith(".psp2dmp"):
+                    filename = parts[-1]
+                    try:
+                        time_part = parts[-2]
+                        
+                        if ':' in time_part: # HH:MM format, assume current year
+                            date_str = f"{parts[-4]} {parts[-3]} {time_part} {datetime.now().year}" 
+                            timestamp = datetime.strptime(date_str, "%b %d %H:%M %Y").timestamp()
+                        else: # Year format
+                            date_str = f"{parts[-4]} {parts[-3]} {time_part}" 
+                            timestamp = datetime.strptime(date_str, "%b %d %Y").timestamp()
+                            
+                        if timestamp > latest_timestamp:
+                            latest_timestamp = timestamp
+                            latest_file = filename
+                            
+                    except ValueError:
+                        self.progress_signal.emit(f"Skipping file {filename}: Date format not recognized.", True)
+                        continue
+
+            if not latest_file:
+                self.error_signal.emit(f"No crash dumps found in {crash_dir}. Check file names and permissions.")
+                return
+
+            self.progress_signal.emit(f"Found latest crash dump: <b>{latest_file}</b>. Downloading...", True)
+
+            # 4. Download the latest crash dump to a temporary location
+            temp_dir = QDir.tempPath()
+            self.temp_core_path = os.path.join(temp_dir, latest_file)
+
+            with open(self.temp_core_path, 'wb') as local_file:
+                ftp.retrbinary(f'RETR {latest_file}', local_file.write)
+            
+            self.progress_signal.emit(f"Download complete: {os.path.basename(self.temp_core_path)}", False)
+
+            # 5. Locate the ELF file
+            build_dir = self.build_dir
+            if not os.path.isdir(build_dir):
+                self.error_signal.emit(f"Build directory not found: <b>{build_dir}</b>. Check settings.json.")
+                return
+
+            elf_files = [os.path.join(build_dir, f) for f in os.listdir(build_dir) if f.endswith(".elf")]
+            if not elf_files:
+                self.error_signal.emit(f"No .elf files found in build directory: <b>{build_dir}</b>.")
+                return
+
+            # Get the most recently modified ELF file (assumed to be the correct one)
+            latest_elf_path = max(elf_files, key=os.path.getmtime)
+            
+            self.progress_signal.emit(f"Found latest ELF: <b>{os.path.basename(latest_elf_path)}</b>.", True)
+            
+            # 6. Signal the main thread to start parsing
+            self.fetched_files_signal.emit(latest_elf_path, self.temp_core_path)
+
+        except ftplib.all_errors as e:
+            self.error_signal.emit(f"FTP Error: {e}")
+        except Exception as e:
+            self.error_signal.emit(f"An unexpected error occurred: {str(e)}\n{traceback.format_exc()}")
+        finally:
+            if ftp:
+                try:
+                    ftp.quit()
+                except:
+                    pass
+            self.progress_signal.emit("Fetch process thread finished.", False)
+# --- End CrashFetchThread ---
+
 
 class CoreDumpTab(QWidget):
-    def __init__(self):
+    def __init__(self, ftp_worker_reference=None):
         super().__init__()
         self.selected_elf = None
         self.selected_core = None
         self.parser_thread = None
-        
+        self.fetch_thread = None 
+        self.analysis_complete = False 
+
         self.dump_folder = settings.get("dump_folder", os.getcwd())
+        # FIX: Get separate IP and Port fields
+        self.vita_ip = settings.get("vita_ip", "")
+        self.vita_port = settings.get("vita_port", 21) # Default to 21 if not found
+        self.build_dir = settings.get("last_build_dir", "") 
 
         layout = QVBoxLayout(self)
 
@@ -823,10 +886,24 @@ class CoreDumpTab(QWidget):
         self.btn_parse = QPushButton("Analyze Crash Dump")
         self.btn_parse.setEnabled(False)
         self.btn_parse.clicked.connect(self.start_core_parser)
+        
+        # NEW: Fetch & Parse Button
+        self.btn_fetch_parse = QPushButton("Fetch & Parse Last Crash")
+        self.btn_fetch_parse.clicked.connect(self.fetch_and_parse_last_crash)
+        # Check if settings for FTP are available to enable button
+        is_ftp_ready = bool(self.vita_ip and self.vita_port and self.build_dir and os.path.isdir(self.build_dir))
+        self.btn_fetch_parse.setEnabled(is_ftp_ready)
+        
+        # NEW: Save Button
+        self.btn_save = QPushButton("Save Analysis")
+        self.btn_save.setEnabled(False) 
+        self.btn_save.clicked.connect(self.save_analysis)
 
         controls_layout.addWidget(self.btn_load_elf)
         controls_layout.addWidget(self.btn_load_crash)
         controls_layout.addWidget(self.btn_parse)
+        controls_layout.addWidget(self.btn_fetch_parse)
+        controls_layout.addWidget(self.btn_save)
         controls_layout.addStretch()
 
         layout.addLayout(controls_layout)
@@ -837,7 +914,6 @@ class CoreDumpTab(QWidget):
         self.core_output.setReadOnly(True)
         self.core_output.setObjectName("logOutput")
         
-        # Habilitar selección de texto
         self.core_output.setTextInteractionFlags(self.core_output.textInteractionFlags() | 
                                                Qt.TextInteractionFlag.TextSelectableByMouse)
 
@@ -861,13 +937,16 @@ class CoreDumpTab(QWidget):
             return
 
         self.selected_elf = filename
-        self.btn_load_elf.setText("ELF Loaded ✓")
+        # FIX: Remove filename from button text
+        self.btn_load_elf.setText(f"ELF Loaded ✓") 
         self.btn_load_elf.setStyleSheet("""
             background-color: #2e7d32; 
             color: white; 
             border: 1px solid #4caf50;
         """)
         self.check_parse_ready()
+        self.analysis_complete = False
+        self.btn_save.setEnabled(False)
 
     def load_crash_file(self):
         filename, _ = QFileDialog.getOpenFileName(
@@ -880,16 +959,23 @@ class CoreDumpTab(QWidget):
             return
 
         self.selected_core = filename
-        self.btn_load_crash.setText("Crash Loaded ✓")
+        # FIX: Remove filename from button text
+        self.btn_load_crash.setText(f"Crash Loaded ✓") 
         self.btn_load_crash.setStyleSheet("""
             background-color: #2e7d32; 
             color: white; 
             border: 1px solid #4caf50;
         """)
         self.check_parse_ready()
+        self.analysis_complete = False
+        self.btn_save.setEnabled(False)
 
     def check_parse_ready(self):
-        if self.selected_elf and self.selected_core:
+        # Enable the parse button if both files are selected and not currently parsing
+        is_parsing = self.parser_thread and self.parser_thread.isRunning()
+        is_fetching = self.fetch_thread and self.fetch_thread.isRunning()
+        
+        if self.selected_elf and self.selected_core and not is_parsing and not is_fetching:
             self.btn_parse.setEnabled(True)
             self.btn_parse.setText("Analyze Crash Dump")
             self.btn_parse.setStyleSheet("""
@@ -897,10 +983,15 @@ class CoreDumpTab(QWidget):
                 color: white;
                 border: 1px solid #3a5f80;
             """)
+        else:
+             self.btn_parse.setEnabled(False)
 
     def start_core_parser(self):
         sdk_path = settings.get("sdk_path")
         self.core_output.clear()
+        self.analysis_complete = False 
+        self.btn_save.setEnabled(False) 
+        self.check_parse_ready() 
         
         self.parser_thread = DumpParserThread(self.selected_core, self.selected_elf, sdk_path)
         self.parser_thread.output_signal.connect(self.update_core_log)
@@ -908,6 +999,7 @@ class CoreDumpTab(QWidget):
         self.parser_thread.progress_signal.connect(lambda s: self.btn_parse.setText(f"Analyzing... ({s})"))
         
         self.btn_parse.setEnabled(False)
+        self.btn_fetch_parse.setEnabled(False) 
         self.parser_thread.start()
 
     @Slot(str, bool)
@@ -916,17 +1008,131 @@ class CoreDumpTab(QWidget):
         if is_html:
             self.core_output.insertHtml(text)
         else:
-            # Fallback for plain text, ensuring a clean break if HTML failed
-            self.core_output.insertPlainText(text) 
+            self.core_output.insertPlainText(text + "\n") 
         self.core_output.moveCursor(QTextCursor.End)
 
     @Slot()
     def parser_finished(self):
         self.check_parse_ready()
+        
+        # Enable save button on successful completion
+        self.analysis_complete = True
+        self.btn_save.setEnabled(True)
+        
+        # Re-enable fetch button if settings allow
+        is_ftp_ready = bool(self.vita_ip and self.vita_port and self.build_dir and os.path.isdir(self.build_dir))
+        self.btn_fetch_parse.setEnabled(is_ftp_ready)
+        
+        self.core_output.moveCursor(QTextCursor.End)
         self.core_output.insertHtml(f'<br><span style="color:{COLOR_GREY};">Done.</span>')
-    def fetch_and_parse_last_crash(self):
-        QMessageBox.information(
-            self,
-            "Feature Unavailable",
-            "Automatic Fetch and Parse is planned for a later version.\nPlease use 'Load .elf' and 'Load crash' manually."
+        self.core_output.moveCursor(QTextCursor.End)
+
+    # --- Save Functionality ---
+    @Slot()
+    def save_analysis(self):
+        if not self.analysis_complete or not self.selected_elf or not self.selected_core:
+            QMessageBox.warning(self, "Warning", "Please run a successful analysis first.")
+            return
+
+        base_dir = QFileDialog.getExistingDirectory(
+            self, "Select Save Directory", self.dump_folder, QFileDialog.ShowDirsOnly
         )
+        if not base_dir: return
+
+        # Create a unique subfolder (e.g., 'elfname_crash_YYYYMMDD_HHMMSS')
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        elf_name = os.path.splitext(os.path.basename(self.selected_elf))[0]
+        
+        save_folder_name = f"{elf_name}_crash_{timestamp}"
+        save_path = os.path.join(base_dir, save_folder_name)
+        
+        try:
+            os.makedirs(save_path, exist_ok=True)
+            
+            # Copy ELF
+            elf_dest = os.path.join(save_path, os.path.basename(self.selected_elf))
+            shutil.copy2(self.selected_elf, elf_dest)
+            
+            # Copy Crash Dump
+            core_dest = os.path.join(save_path, os.path.basename(self.selected_core))
+            shutil.copy2(self.selected_core, core_dest)
+            
+            # Save Analysis Output (as HTML for colors)
+            output_html = self.core_output.toHtml()
+            output_file = os.path.join(save_path, "analysis_output.html")
+            with open(output_file, "w", encoding="utf-8") as f:
+                f.write(output_html)
+
+            QMessageBox.information(self, "Success", f"Analysis saved successfully to:\n{save_path}")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save analysis: {str(e)}")
+            
+    # --- Fetch & Parse Functionality (FIXED) ---
+    @Slot()
+    def fetch_and_parse_last_crash(self):
+        if not (self.vita_ip and self.vita_port and self.build_dir):
+            QMessageBox.critical(self, "Error", "Vita IP/Port or Build Directory not set in settings.")
+            return
+
+        if self.fetch_thread and self.fetch_thread.isRunning():
+            QMessageBox.warning(self, "Warning", "Crash fetching is already in progress.")
+            return
+
+        # Clear output area and prepare UI
+        self.core_output.clear()
+        self.analysis_complete = False
+        self.btn_save.setEnabled(False)
+        self.btn_parse.setEnabled(False)
+        self.btn_fetch_parse.setEnabled(False)
+        self.btn_fetch_parse.setText("Fetching...")
+        
+        self.update_core_log("Starting crash fetch process...", is_html=False)
+        
+        # PASS separate IP and Port
+        self.fetch_thread = CrashFetchThread(self.vita_ip, self.vita_port, self.build_dir, self)
+        self.fetch_thread.progress_signal.connect(lambda s, h: self.update_core_log(f"-> {s}", is_html=h))
+        self.fetch_thread.error_signal.connect(self.handle_fetch_error)
+        self.fetch_thread.fetched_files_signal.connect(self.handle_fetched_files)
+        self.fetch_thread.finished.connect(self.fetch_finished_cleanup)
+        
+        self.fetch_thread.start()
+
+    @Slot(str, str)
+    def handle_fetched_files(self, elf_path, core_path):
+        """Called when CrashFetchThread successfully downloads the files."""
+        self.selected_elf = elf_path
+        self.selected_core = core_path
+        
+        # Update file buttons (no long file names)
+        self.btn_load_elf.setText(f"ELF Loaded ✓")
+        self.btn_load_crash.setText(f"Crash Loaded ✓")
+        self.btn_load_elf.setStyleSheet("""background-color: #2e7d32; color: white; border: 1px solid #4caf50;""")
+        self.btn_load_crash.setStyleSheet("""background-color: #2e7d32; color: white; border: 1px solid #4caf50;""")
+        
+        self.update_core_log("\nStarting automated analysis...", is_html=False)
+        self.start_core_parser()
+        
+    @Slot(str)
+    def handle_fetch_error(self, message):
+        """Called when CrashFetchThread encounters an error."""
+        self.update_core_log(f'<span style="color:{COLOR_RED};">!!! FETCH ERROR: {message} !!!</span>', is_html=True)
+        QMessageBox.critical(self, "Fetch Error", "Failed to retrieve and/or locate files.")
+        
+    @Slot()
+    def fetch_finished_cleanup(self):
+        """Called when CrashFetchThread finishes (success or failure)."""
+        self.btn_fetch_parse.setText("Fetch & Parse Last Crash")
+        
+        # Re-enable the button if parsing hasn't started (i.e., if fetching failed)
+        is_parsing = self.parser_thread and self.parser_thread.isRunning()
+        if not is_parsing:
+             self.check_parse_ready()
+             is_ftp_ready = bool(self.vita_ip and self.vita_port and self.build_dir and os.path.isdir(self.build_dir))
+             self.btn_fetch_parse.setEnabled(is_ftp_ready)
+             
+        if self.fetch_thread and self.fetch_thread.temp_core_path and not is_parsing:
+            try:
+                os.remove(self.fetch_thread.temp_core_path)
+            except Exception:
+                pass
