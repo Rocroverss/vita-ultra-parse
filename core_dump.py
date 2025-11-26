@@ -1,6 +1,6 @@
 # core_dump.py
 # Fully integrated Vita Crash Dump Analyzer for Python 3 / PySide6
-# Based on original work by xyzz, integrated and fixed for modern environments.
+# Includes colorized output.
 
 import os
 import sys
@@ -10,14 +10,28 @@ import gzip
 from collections import defaultdict
 import traceback
 
+# Importaciones de PySide6 (ajustadas para usar QTextEdit y el flag de Qt)
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-                               QLabel, QPlainTextEdit, QFileDialog, QMessageBox)
-from PySide6.QtCore import QThread, Signal, Slot
+                               QLabel, QTextEdit, QFileDialog, QMessageBox) 
+from PySide6.QtCore import QThread, Signal, Slot, Qt
 from PySide6.QtGui import QTextCursor
 
 # ==========================================
-# UTILITIES & LOGGING
+# COLORS & UTILITIES
 # ==========================================
+
+# --- COLOR DEFINITIONS (HTML HEX CODES) ---
+COLOR_RED = "#F44747"       # Crash/Error information
+COLOR_YELLOW = "#FFD700"    # General labels (ID:, Status:, etc.) - Strong Gold
+COLOR_GREY = "#D4D4D4"      # General text, non-highlighted output
+COLOR_BLUE = "#569CD6"      # Reserved
+COLOR_TEAL = "#00FFFF"      # New color for headers (Bright Cyan)
+COLOR_ORANGE = "#FF8C00"    # New color for registers
+
+# Colores para el contraste solicitado:
+COLOR_THREAD_NAME = "#4EC9B0" # Nuevo color para nombres de hilos (Teal/Aqua)
+COLOR_SYM_NAME = "#85C664"    # Nuevo color para la estructura simbólica (Brighter Green)
+COLOR_ADDR_BASE = "#FFFFFF"   # Nuevo color para los valores de dirección (White)
 
 _log_callback = None
 _indent_level = 0
@@ -30,20 +44,63 @@ def set_indent_level(val):
     global _indent_level
     _indent_level = val
 
-def iprint(*args, **kwargs):
-    """Indent-aware print to log callback."""
-    prefix = "    " * _indent_level
-    text = " ".join(str(a) for a in args)
-    out = prefix + text + ("\n" if not text.endswith("\n") else "")
+def iprint(*args, color=COLOR_GREY, **kwargs):
+    """Indent-aware print to log callback, supporting HTML coloring, ensuring line breaks."""
+    global _log_callback
     
-    # Send to GUI if callback exists, otherwise stdout
+    # FIX: Use &nbsp; to force space rendering in HTML for indentation.
+    prefix = ("&nbsp;&nbsp;&nbsp;&nbsp;" * _indent_level)
+    
+    text = " ".join(str(a) for a in args)
+    
+    # Maneja llamadas vacías (iprint()) para un simple salto de línea.
+    if not text.strip() and not _indent_level:
+        if _log_callback:
+            _log_callback("<br>", is_html=True)
+        return
+    
+    out = text
+    html_out = ""
+    
+    # Dividir por nueva línea para procesar la sangría y '!!!' por línea
+    out_lines = out.split('\n')
+    
+    for line in out_lines:
+        line_stripped = line.strip()
+        line_color = color
+        
+        # Regla: Las líneas que empiezan/terminan con '!!!' son siempre ROJAS
+        if line_stripped.startswith('!!!') and line_stripped.endswith('!!!'):
+            line_color = COLOR_RED
+
+        # Si la línea tiene contenido
+        if line or (len(out_lines) > 1 and not line.strip()):
+            
+            # Si el texto ya contiene HTML (ej. de VitaAddress.to_string o llamadas manuales)
+            if '<span' in line and color != COLOR_GREY:
+                # FIX: Añadir el prefijo &nbsp; solo una vez al comienzo de la línea HTML
+                html_out += prefix + line + '<br>'
+            else:
+                # Envolver toda la línea (incluyendo la sangría/prefijo) en el color solicitado + <br>
+                html_out += f'<span style="color:{line_color};">{prefix}{line}</span><br>'
+        else:
+            # Línea vacía que no es solo un resultado de un split de una cadena multilínea
+            pass
+
+    # Enviar HTML a la GUI
     if _log_callback:
+        if not html_out.endswith('<br>'):
+            html_out += '<br>'
+            
         try:
-            _log_callback(out)
+            _log_callback(html_out, is_html=True)
         except Exception:
-            print(out, end="")
+            # Fallback para errores/QTextEdit faltante
+            print(out, end="\n")
     else:
-        print(out, end="")
+        # Fallback para depuración CLI
+        print(out, end="\n")
+
 
 class IndentManager:
     """Context manager for indentation."""
@@ -75,11 +132,9 @@ def c_str(data, offset=0):
         return ""
     sub = data[offset:]
     try:
-        # In bytes, 0 is an integer, not a char
         idx = sub.index(0)
         return sub[:idx].decode('utf-8', errors='ignore')
     except ValueError:
-        # No null terminator found, decode whole string
         return sub.decode('utf-8', errors='ignore')
 
 # ==========================================
@@ -87,7 +142,6 @@ def c_str(data, offset=0):
 # ==========================================
 class _Settings:
     def __init__(self):
-        # Tries to get SDK path from environment variable, or defaults to empty
         self._d = {"sdk_path": os.environ.get("VITA_SDK_PATH", ""),
                    "dump_folder": os.getcwd()}
 
@@ -132,19 +186,15 @@ class SimpleSegment:
         off = 0
         notes = []
         while off + 12 <= len(data):
-            # Parse Note Header (namesz, descsz, type)
             namesz, descsz, ntype = struct.unpack_from("<III", data, off)
             off += 12
             
-            # Read Name (padded to 4 bytes)
             name_data = data[off:off + namesz]
             off += ((namesz + 3) // 4) * 4
             
-            # Read Desc (padded to 4 bytes)
             desc_data = data[off:off + descsz]
             off += ((descsz + 3) // 4) * 4
             
-            # Decode name
             try:
                 name_str = name_data.split(b'\x00', 1)[0].decode('utf-8', errors='ignore')
             except Exception:
@@ -165,8 +215,6 @@ class SimpleELFFile:
         if len(e_ident) < 16 or e_ident[0:4] != b'\x7fELF':
             raise ValueError("Not an ELF file")
         
-        # Read the rest of the header (standard ELF32 header size is 52 bytes total)
-        # We need e_phoff (offset 28), e_phentsize (42), e_phnum (44)
         self._f.seek(28)
         self.e_phoff = struct.unpack("<I", self._f.read(4))[0]
         self._f.seek(42)
@@ -181,13 +229,11 @@ class SimpleELFFile:
             if len(ph_data) < 32:
                 break
             
-            # p_type(4), p_offset(4), p_vaddr(4), p_paddr(4), p_filesz(4), p_memsz(4), p_flags(4), p_align(4)
             vals = struct.unpack_from("<IIIIIIII", ph_data, 0)
             p_type, p_offset, p_vaddr, _, p_filesz, _, p_flags, _ = vals
             
             header = _SegmentHeader(p_type, p_offset, p_vaddr, p_filesz, p_flags)
             
-            # Save current pos, read data, restore pos
             cur = self._f.tell()
             self._f.seek(p_offset)
             data = self._f.read(p_filesz)
@@ -196,7 +242,6 @@ class SimpleELFFile:
             segs.append(SimpleSegment(header, data))
         return segs
 
-# Wrapper to select the correct ELF class
 def GetELFParser(fileobj):
     if HAS_PYELFTOOLS:
         return ELFFile(fileobj)
@@ -211,7 +256,6 @@ class VitaThread:
     def __init__(self, data):
         self.uid = u32(data, 4)
         self.name = c_str(data, 8)
-        # Offsets based on observed core dumps
         self.stop_reason = u32(data, 0x74) if len(data) >= 0x78 else 0
         self.status = u16(data, 0x30) if len(data) >= 0x32 else 0
         self.pc = u32(data, 0x9C) if len(data) >= 0xA0 else 0
@@ -271,30 +315,51 @@ class VitaAddress:
 
         if self.is_located():
             iprint()
-            iprint(f"DISASSEMBLY AROUND {self.__symbol}: 0x{addr_to_display:x} ({state}):")
+            # Título de Desensamblaje es AMARILLO, pero el prefijo es GREEN para la estructura
+            iprint(f"DISASSEMBLY AROUND {self.__symbol}: 0x{addr_to_display:x} ({state}):", color=COLOR_YELLOW)
             try:
-                # Correctly calling the method on ElfParserObj
+                # La salida del desensamblaje será GRIS/ROJO
                 elf_parser.disas_around_addr(self.__offset, self.__vaddr)
             except Exception as e:
-                iprint(f"[Disassembly failed: {str(e)}]")
-                iprint("[Ensure Vita SDK is in PATH or set in settings]")
+                # Mensajes de error son GRISES
+                iprint(f"[Disassembly failed: {str(e)}]", color=COLOR_GREY)
+                iprint("[Ensure Vita SDK is in PATH or set in settings]", color=COLOR_GREY)
 
-    def to_string(self, elf_parser=None):
+    def to_string(self, elf_parser=None, include_symbol=True):
+        """
+        Returns HTML string with colors for symbolic address (Green structure, White numbers).
+        If include_symbol is False, it omits the "PC: " or "LR: " prefix (used for stack values).
+        """
+        vaddr_color = COLOR_ADDR_BASE 
+        output = ""
+        
+        # FIX: Only print the symbol (PC:, LR:, R0:, etc.) if requested
+        if include_symbol:
+            output = f'<span style="color:{COLOR_SYM_NAME};">{self.__symbol}: </span>'
+        
+        # Dirección (White)
+        output += f'<span style="color:{vaddr_color};">0x{self.__vaddr:x}</span>'
+        
         if self.is_located():
-            output = "{}: 0x{:x} ({}@{} + 0x{:x}".format(self.__symbol, self.__vaddr,
-                       self.__module.name, self.__segment.num, self.__offset)
+            # Módulo/Segmento/Offset (Green)
+            output += f'<span style="color:{COLOR_SYM_NAME};"> ({self.__module.name}@{self.__segment.num} + </span>'
             
-            # Try to get line number if it's the main executable
+            # Offset (White)
+            output += f'<span style="color:{vaddr_color};">0x{self.__offset:x}</span>'
+            
+            line_info = ""
+            # Intentar obtener número de línea
             if elf_parser and self.__module.name.endswith(".elf") and self.__segment.num == 1:
                 try:
                     line_info = elf_parser.addr2line(self.__offset)
                     if line_info:
-                        output += " => {}".format(line_info)
+                        # Información de línea (Green)
+                        line_info = f'<span style="color:{COLOR_SYM_NAME};"> => {line_info}</span>'
                 except Exception:
                     pass
-            output += ')'
-        else:
-            output = "{}: 0x{:x}".format(self.__symbol, self.__vaddr)
+            
+            output += f'<span style="color:{COLOR_SYM_NAME};">)</span>{line_info}'
+            
         return output
 
 class CoreSegment:
@@ -304,12 +369,11 @@ class CoreSegment:
         self.size = len(data)
 
 # ==========================================
-# PARSERS
+# CORE PARSER
 # ==========================================
 
 class CoreParser:
     def __init__(self, filename):
-        # Open file (handle GZIP transparently)
         f = open(filename, "rb")
         header = f.read(2)
         f.seek(0)
@@ -327,7 +391,6 @@ class CoreParser:
         self.parse_threads()
         self.parse_thread_regs()
         
-        # We can close the file handle now as we've read everything into memory
         self.file_handle.close()
 
     def init_notes(self):
@@ -335,7 +398,6 @@ class CoreParser:
         self.segments = []
         
         for seg in self.elf.iter_segments():
-            # Handle p_type differences (int vs string depending on library/fallback)
             p_type = seg.header.p_type
             
             is_note = (p_type == 4) or (p_type == "PT_NOTE")
@@ -343,7 +405,6 @@ class CoreParser:
 
             if is_note:
                 for note in seg.iter_notes():
-                    # note['n_name'] is string, note['n_desc'] is bytes
                     self.notes[note["n_name"]] = note["n_desc"]
             elif is_load:
                 self.segments.append(CoreSegment(seg.header.p_vaddr, seg.data()))
@@ -354,7 +415,6 @@ class CoreParser:
             return
             
         data = self.notes["MODULE_INFO"]
-        # Ensure data is bytes
         if isinstance(data, str):
             data = data.encode('latin-1')
 
@@ -363,19 +423,16 @@ class CoreParser:
         num = u32(data, 4)
         off = 8
         for _ in range(num):
-            # Module Header
             sz = 0x50
             if off + sz > len(data): break
             module = VitaModule(data[off:off+sz])
             off += sz
             
-            # Module Segments
             seg_sz = module.num_segs * 0x14
             if off + seg_sz <= len(data):
                 module.parse_segs(data[off:off+seg_sz])
                 off += seg_sz
             
-            # Module Footer
             sz = 0x10
             if off + sz <= len(data):
                 module.parse_foot(data[off:off+sz])
@@ -437,6 +494,10 @@ class CoreParser:
                 return segment.data[local_addr:local_addr+size]
         return None
 
+# ==========================================
+# ELF PARSER
+# ==========================================
+
 class ElfParserObj:
     def __init__(self, filename, sdk_path=None):
         self.filename = filename
@@ -445,9 +506,6 @@ class ElfParserObj:
         self.elf = GetELFParser(self.f)
         self.rx_vaddr = -1
         self.parse_segments()
-        
-        # We don't close self.f here just in case pyelftools reads lazily, 
-        # but usually it's fine. We close it on destruction or when thread ends.
         self.a2l = None
 
     def close(self):
@@ -469,7 +527,6 @@ class ElfParserObj:
 
     def parse_segments(self):
         for seg in self.elf.iter_segments():
-            # Unify access to p_flags/p_vaddr between pyelftools and fallback
             p_flags = getattr(seg.header, 'p_flags', None)
             if p_flags is None and hasattr(seg, '__getitem__'):
                  p_flags = seg['p_flags']
@@ -478,12 +535,11 @@ class ElfParserObj:
             if p_vaddr is None and hasattr(seg, '__getitem__'):
                 p_vaddr = seg['p_vaddr']
 
-            # Check for RX segment (Flags == 5 or "5")
-            if str(p_flags) == "5":
+            # 5 is PT_LOAD with PF_R | PF_X (Read-Execute)
+            if str(p_flags) == "5": 
                 self.rx_vaddr = p_vaddr
 
     def disas_around_addr(self, offset, vaddr):
-        # Calculate absolute address for objdump
         if self.rx_vaddr != -1:
             abs_addr = offset + self.rx_vaddr
         else:
@@ -507,10 +563,8 @@ class ElfParserObj:
             args += ['-Mforce-thumb']
 
         try:
-            # IMPORTANT: Capture stderr to prevent noise
-            output = subprocess.check_output(args, stderr=subprocess.STDOUT)
-            
-            # Decode bytes to string
+            # Added stderr=subprocess.DEVNULL to clean up objdump output
+            output = subprocess.check_output(args, stderr=subprocess.DEVNULL) 
             text_output = output.decode('utf-8', errors='replace')
             lines = text_output.splitlines()
 
@@ -522,20 +576,24 @@ class ElfParserObj:
                     keep = True
                     continue
                 if keep:
-                    # Highlight the specific instruction
+                    # Highlight the specific instruction with the '!!!' markers
                     if f"{abs_addr:x}:" in line:
-                        line = ">>> " + line.strip()
+                        # Clean up tabs/spaces before adding markers
+                        line = line.strip()
+                        line = "!!! " + line + " !!!"
                     final_lines.append(line)
 
             if final_lines:
+                # iprint handles the default GREY color and the RED '!!!' color.
                 iprint("\n".join(final_lines))
             else:
-                iprint("(No disassembly output found)")
+                iprint("(No disassembly output found)", color=COLOR_GREY)
 
         except FileNotFoundError:
             raise FileNotFoundError(f"Tool not found: {cmd}")
         except subprocess.CalledProcessError as e:
-            iprint(f"Objdump error: {e.output.decode('utf-8', errors='replace')}")
+            # Use GREY for tool errors
+            iprint(f"Objdump error: {e.output.decode('utf-8', errors='replace')}", color=COLOR_GREY)
 
     def addr2line(self, offset):
         if not self.a2l:
@@ -548,7 +606,6 @@ class ElfParserObj:
             except FileNotFoundError:
                 raise FileNotFoundError("addr2line tool not found")
 
-        # Addr2line needs the absolute address
         abs_addr = offset + self.rx_vaddr if self.rx_vaddr != -1 else offset
         
         msg = f"{abs_addr:x}\n".encode('utf-8')
@@ -558,7 +615,7 @@ class ElfParserObj:
             out = self.a2l.stdout.readline()
             return out.strip().decode('utf-8')
         except (IOError, BrokenPipeError):
-            self.a2l = None # Restart next time
+            self.a2l = None 
             return ""
 
 # ==========================================
@@ -566,7 +623,7 @@ class ElfParserObj:
 # ==========================================
 
 class DumpParserThread(QThread):
-    output_signal = Signal(str)
+    output_signal = Signal(str, bool) 
     finished_signal = Signal()
     progress_signal = Signal(str)
 
@@ -577,14 +634,22 @@ class DumpParserThread(QThread):
         self.sdk_path = sdk_path
         self.elf_parser = None
 
+    def emit_log(self, text, is_html=False):
+        """Sends output to the main thread's log window."""
+        self.output_signal.emit(str(text), is_html)
+
     def run(self):
-        # Bind the logging callback to this thread's signal
         set_log_callback(self.emit_log)
         set_indent_level(0)
 
         self.progress_signal.emit("Parsing...")
         try:
-            self.emit_log(f"--- Starting Analysis ---\nCore: {self.core_file}\nELF: {self.elf_file}\nSDK: {self.sdk_path or 'System PATH'}\n")
+            # Colores de información de inicio (GREY)
+            iprint("--- Starting Analysis ---", color=COLOR_GREY)
+            iprint(f"Core: {self.core_file}", color=COLOR_GREY)
+            iprint(f"ELF: {self.elf_file}", color=COLOR_GREY)
+            iprint(f"SDK: {self.sdk_path or 'System PATH'}") # Salto de linea automatico
+            iprint()
 
             core = CoreParser(self.core_file)
             self.elf_parser = ElfParserObj(self.elf_file, self.sdk_path)
@@ -603,95 +668,136 @@ class DumpParserThread(QThread):
             })
             reg_names = {13: "SP", 14: "LR", 15: "PC"}
 
-            iprint("=== THREADS ===")
+            # Encabezado principal (TEAL/CYAN)
+            iprint("=== THREADS ===", color=COLOR_TEAL)
             crashed = []
 
-            # List all threads
-            with IndentManager():
+            # Listar todos los hilos
+            with IndentManager(): # Level 1 Indentation for Thread Name
                 for thread in core.threads:
                     if thread.stop_reason != 0:
                         crashed.append(thread)
 
-                    iprint(thread.name)
-                    with IndentManager():
-                        iprint(f"ID: 0x{thread.uid:x}")
-                        reason_str = str_stop_reason[thread.stop_reason]
-                        iprint(f"Stop reason: 0x{thread.stop_reason:x} ({reason_str})")
-                        status_str = str_status[thread.status]
-                        iprint(f"Status: 0x{thread.status:x} ({status_str})")
-
-                        # Resolve PC
-                        pc = core.get_address_notation("PC", thread.pc)
-                        iprint(pc.to_string(self.elf_parser))
+                    # Nombre del hilo (THREAD_NAME)
+                    iprint(thread.name, color=COLOR_THREAD_NAME) 
+                    
+                    with IndentManager(): # Level 2 Indentation for details
+                        # Información general (YELLOW para la etiqueta, ADDR_BASE/RED para el valor)
                         
-                        # If PC not resolved, try LR (Link Register)
-                        if not pc.is_located() and thread.regs:
-                            lr_val = thread.regs.gpr[14]
-                            iprint(core.get_address_notation("LR", lr_val).to_string(self.elf_parser))
+                        # ID (Yellow label, White value)
+                        iprint(f"ID: <span style=\"color:{COLOR_ADDR_BASE};\">0x{thread.uid:x}</span>", color=COLOR_YELLOW)
+                        
+                        # Razón de detención (Yellow label, dynamic color value)
+                        reason_str = str_stop_reason[thread.stop_reason]
+                        
+                        reason_color = COLOR_YELLOW
+                        if "abort" in reason_str or "instruction" in reason_str:
+                            reason_color = COLOR_RED
+                        
+                        # Usar iprint con HTML para mantener la sangría y el formato
+                        html_line = f'<span style="color:{COLOR_YELLOW};">Stop reason: </span>'
+                        html_line += f'<span style="color:{COLOR_ADDR_BASE};">0x{thread.stop_reason:x} (</span>'
+                        html_line += f'<span style="color:{reason_color};">{reason_str}</span>'
+                        html_line += f'<span style="color:{COLOR_ADDR_BASE};">)</span>'
+                        iprint(html_line, color=COLOR_YELLOW) # Usar COLOR_YELLOW para el color general/prefijo
+
+                        # Estado (Yellow label, White value)
+                        status_str = str_status[thread.status]
+                        html_line = f'<span style="color:{COLOR_YELLOW};">Status: </span>'
+                        html_line += f'<span style="color:{COLOR_ADDR_BASE};">0x{thread.status:x} ({status_str})</span>'
+                        iprint(html_line, color=COLOR_YELLOW)
+
+                        # PC/LR (Yellow label, Green/White symbolic structure)
+                        pc = core.get_address_notation("PC", thread.pc)
+                        lr = core.get_address_notation("LR", thread.regs.gpr[14] if thread.regs else 0)
+                        
+                        # PC (Label is part of VitaAddress, color is SYM_NAME)
+                        iprint(pc.to_string(self.elf_parser), color=COLOR_SYM_NAME) # Using SYM_NAME for the label part
+                        
+                        # Only print LR if it's different from PC
+                        if lr.to_string(self.elf_parser) != pc.to_string(self.elf_parser):
+                            iprint(lr.to_string(self.elf_parser), color=COLOR_SYM_NAME)
+
 
             iprint()
 
-            # Detailed crash info
+            # Información detallada del crash
             for thread in crashed:
                 reason = str_stop_reason[thread.stop_reason]
-                iprint(f'=== THREAD "{thread.name}" <0x{thread.uid:x}> CRASHED ({reason}) ===')
+                reason_color = COLOR_RED
+                
+                # Encabezado de Crash (GREY + RED reason)
+                html_line = f'<span style="color:{COLOR_GREY};">=== THREAD "{thread.name}" </span>'
+                html_line += f'<span style="color:{COLOR_ADDR_BASE};"><0x{thread.uid:x}></span>'
+                html_line += f'<span style="color:{COLOR_GREY};"> CRASHED (</span>'
+                html_line += f'<span style="color:{reason_color};">{reason}</span>'
+                html_line += f'<span style="color:{COLOR_GREY};">) ===</span>'
+                iprint(html_line, color=COLOR_GREY) 
 
-                # Determine PC and LR from registers if available, else struct
-                cur_pc_val = thread.regs.gpr[15] if thread.regs else thread.pc
-                cur_lr_val = thread.regs.gpr[14] if thread.regs else 0
-
-                pc = core.get_address_notation('PC', cur_pc_val)
+                pc = core.get_address_notation('PC', thread.regs.gpr[15] if thread.regs else thread.pc)
                 pc.print_disas_if_available(self.elf_parser)
 
-                lr = core.get_address_notation('LR', cur_lr_val)
-                lr.print_disas_if_available(self.elf_parser)
-
-                iprint("\nREGISTERS:")
-                with IndentManager():
+                # Encabezado de Registros (TEAL/CYAN)
+                iprint("\nREGISTERS:", color=COLOR_TEAL)
+                with IndentManager(): # Level 1 Indentation for Registers
                     if thread.regs:
                         for x in range(16):
                             reg = reg_names.get(x, f"R{x}")
-                            iprint(f"{reg}: 0x{thread.regs.gpr[x]:x}")
+                            # Valores de Registros (ORANGE label, WHITE value)
+                            html_line = f'<span style="color:{COLOR_ORANGE};">{reg}: </span>'
+                            html_line += f'<span style="color:{COLOR_ADDR_BASE};">0x{thread.regs.gpr[x]:x}</span>'
+                            iprint(html_line, color=COLOR_ORANGE)
                         
-                        # Reprint symbolic PC/LR
-                        iprint(pc.to_string())
-                        iprint(lr.to_string())
+                        # PC/LR Simbólicos (Green/White) - Already at Level 1, no further indent needed
+                        # The symbolic notation is printed here, using the SYM_NAME color for the label part
+                        iprint(pc.to_string(self.elf_parser), color=COLOR_SYM_NAME)
+                        iprint(lr.to_string(self.elf_parser), color=COLOR_SYM_NAME)
                     else:
-                        iprint("No register info available.")
+                        iprint("No register info available.", color=COLOR_GREY)
 
-                iprint("\nSTACK CONTENTS AROUND SP:")
-                with IndentManager():
+                # Encabezado de Stack (TEAL/CYAN)
+                iprint("\nSTACK CONTENTS AROUND SP:", color=COLOR_TEAL)
+                with IndentManager(): # Level 1 Indentation for Stack
                     if thread.regs:
                         sp = thread.regs.gpr[13]
-                        # Print range relative to SP (e.g. -16 to +24 words)
                         stack_range = 24
                         for x in range(-16, stack_range):
                             addr = 4 * x + sp
                             data = core.read_vaddr(addr, 4)
                             if data:
                                 val = u32(data, 0)
-                                prefix = "     "
-                                if addr == sp:
-                                    prefix = "SP =>"
+                                prefix = "          "
                                 
-                                symbol = f"{prefix} 0x{addr:x}"
-                                data_notation = core.get_address_notation(symbol, val)
-                                iprint(data_notation.to_string(self.elf_parser))
+                                # 1. Prepare the stack address label (SP => 0x...)
+                                if addr == sp:
+                                    prefix = "SP => "
+                                
+                                # 2. Prepare the stack *value* notation
+                                # We pass an empty symbol here, as we only want the symbolic module info for the value (val)
+                                data_notation = core.get_address_notation("", val) 
+                                
+                                # 3. Combine and print
+                                # Stack Address Label: Green for prefix, White for address
+                                html_line = f'<span style="color:{COLOR_SYM_NAME};">{prefix}</span>'
+                                html_line += f'<span style="color:{COLOR_ADDR_BASE};">0x{addr:x}: </span>'
+                                # Stack Value Notation: Call to_string with include_symbol=False to prevent duplication
+                                html_line += data_notation.to_string(self.elf_parser, include_symbol=False) 
+                                
+                                iprint(html_line, color=COLOR_SYM_NAME)
                     else:
-                        iprint("No stack info available.")
+                        iprint("No stack info available.", color=COLOR_GREY)
 
         except Exception as e:
-            self.emit_log(f"\nCRITICAL ERROR DURING ANALYSIS:\n{str(e)}\n{traceback.format_exc()}")
+            self.emit_log(f'\n<span style="color:{COLOR_RED};">CRITICAL ERROR DURING ANALYSIS:</span><br>', is_html=True)
+            self.emit_log(f'<span style="color:{COLOR_GREY};">{str(e)}\n{traceback.format_exc()}</span>', is_html=True)
             self.progress_signal.emit("Error")
         finally:
             if self.elf_parser:
                 self.elf_parser.close()
 
-        self.emit_log("\n--- Analysis Finished ---")
+        self.emit_log(f'<br><span style="color:{COLOR_GREY};">--- Analysis Finished ---</span><br>', is_html=True)
         self.finished_signal.emit()
 
-    def emit_log(self, text):
-        self.output_signal.emit(str(text))
 
 class CoreDumpTab(QWidget):
     def __init__(self):
@@ -700,7 +806,6 @@ class CoreDumpTab(QWidget):
         self.selected_core = None
         self.parser_thread = None
         
-        # Use existing settings or default
         self.dump_folder = settings.get("dump_folder", os.getcwd())
 
         layout = QVBoxLayout(self)
@@ -727,10 +832,14 @@ class CoreDumpTab(QWidget):
 
         # Log Output
         layout.addWidget(QLabel("Core Dump Analysis Output:"))
-        self.core_output = QPlainTextEdit()
+        self.core_output = QTextEdit() 
         self.core_output.setReadOnly(True)
         self.core_output.setObjectName("logOutput")
-        # Monospace font for alignment
+        
+        # Habilitar selección de texto
+        self.core_output.setTextInteractionFlags(self.core_output.textInteractionFlags() | 
+                                               Qt.TextInteractionFlag.TextSelectableByMouse)
+
         font = self.core_output.font()
         if os.name == 'nt':
             font.setFamily("Consolas")
@@ -752,7 +861,11 @@ class CoreDumpTab(QWidget):
 
         self.selected_elf = filename
         self.btn_load_elf.setText("ELF Loaded ✓")
-        self.btn_load_elf.setStyleSheet("color: green;")
+        self.btn_load_elf.setStyleSheet("""
+            background-color: #2e7d32; 
+            color: white; 
+            border: 1px solid #4caf50;
+        """)
         self.check_parse_ready()
 
     def load_crash_file(self):
@@ -767,19 +880,27 @@ class CoreDumpTab(QWidget):
 
         self.selected_core = filename
         self.btn_load_crash.setText("Crash Loaded ✓")
-        self.btn_load_crash.setStyleSheet("color: green;")
+        self.btn_load_crash.setStyleSheet("""
+            background-color: #2e7d32; 
+            color: white; 
+            border: 1px solid #4caf50;
+        """)
         self.check_parse_ready()
 
     def check_parse_ready(self):
         if self.selected_elf and self.selected_core:
             self.btn_parse.setEnabled(True)
             self.btn_parse.setText("Analyze Crash Dump")
+            self.btn_parse.setStyleSheet("""
+                background-color: #2f4f6f;
+                color: white;
+                border: 1px solid #3a5f80;
+            """)
 
     def start_core_parser(self):
         sdk_path = settings.get("sdk_path")
         self.core_output.clear()
-        self.core_output.appendPlainText("Initializing Parser...\n")
-
+        
         self.parser_thread = DumpParserThread(self.selected_core, self.selected_elf, sdk_path)
         self.parser_thread.output_signal.connect(self.update_core_log)
         self.parser_thread.finished_signal.connect(self.parser_finished)
@@ -788,18 +909,20 @@ class CoreDumpTab(QWidget):
         self.btn_parse.setEnabled(False)
         self.parser_thread.start()
 
-    @Slot(str)
-    def update_core_log(self, text):
+    @Slot(str, bool)
+    def update_core_log(self, text, is_html): 
         self.core_output.moveCursor(QTextCursor.End)
-        self.core_output.insertPlainText(text)
+        if is_html:
+            self.core_output.insertHtml(text)
+        else:
+            # Fallback for plain text, ensuring a clean break if HTML failed
+            self.core_output.insertPlainText(text) 
         self.core_output.moveCursor(QTextCursor.End)
 
     @Slot()
     def parser_finished(self):
         self.check_parse_ready()
-        self.core_output.appendPlainText("\nDone.")
-
-    # --- ESTE ES EL MÉTODO QUE FALTABA ---
+        self.core_output.insertHtml(f'<br><span style="color:{COLOR_GREY};">Done.</span>')
     def fetch_and_parse_last_crash(self):
         QMessageBox.information(
             self,
