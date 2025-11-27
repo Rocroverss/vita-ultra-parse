@@ -14,6 +14,7 @@ import time
 from datetime import datetime
 from collections import defaultdict
 import traceback
+import re
 
 # Importaciones de PySide6
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
@@ -530,6 +531,28 @@ class ElfParserObj:
                 self.rx_vaddr = p_vaddr
 
     def disas_around_addr(self, offset, vaddr):
+        # --- helpers ---
+        def html_escape(s: str) -> str:
+            return (
+                s.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+
+        # r0..r15, sp, lr, pc
+        reg_pattern = re.compile(r"\b(r1[0-5]|r[0-9]|sp|lr|pc)\b", re.IGNORECASE)
+
+        def colorize_registers(text: str) -> str:
+            """Escape HTML and then wrap register tokens in COLOR_ORANGE."""
+            escaped = html_escape(text)
+
+            def repl(m):
+                reg = m.group(0)
+                return f'<span style="color:{COLOR_ORANGE};">{reg}</span>'
+
+            return reg_pattern.sub(repl, escaped)
+
+        # --- compute absolute address & Thumb state ---
         if self.rx_vaddr != -1:
             abs_addr = offset + self.rx_vaddr
         else:
@@ -555,7 +578,6 @@ class ElfParserObj:
             args += ["-Mforce-thumb"]
 
         try:
-            # Capture BOTH stdout and stderr so we can show objdump warnings
             proc = subprocess.run(
                 args,
                 stdout=subprocess.PIPE,
@@ -563,9 +585,9 @@ class ElfParserObj:
                 check=False,
             )
 
+            # Show objdump warnings (if any)
             stderr_text = proc.stderr.decode("utf-8", errors="replace")
             if stderr_text.strip():
-                # Print objdump warnings (like ELF/source mismatch)
                 for line in stderr_text.splitlines():
                     if line.strip():
                         iprint(line, color=COLOR_YELLOW)
@@ -574,7 +596,7 @@ class ElfParserObj:
             lines = text_output.splitlines()
 
             keep = False
-            final_lines = []
+            final_lines = []  # list of (raw_line, is_target)
 
             for line in lines:
                 if "Disassembly of section" in line:
@@ -583,42 +605,129 @@ class ElfParserObj:
                 if not keep:
                     continue
 
-                # Highlight the exact instruction at abs_addr
-                if f"{abs_addr:x}:" in line:
-                    line = "!!! " + line.strip() + " !!!"
-
-                final_lines.append(line)
+                is_target = f"{abs_addr:x}:" in line
+                final_lines.append((line, is_target))
 
             if final_lines:
-                # HTML-escape so things like "<CallObjectMethodV+0x22>" render correctly
-                safe_lines = []
-                for l in final_lines:
-                    l_safe = (
-                        l.replace("&", "&amp;")
-                         .replace("<", "&lt;")
-                         .replace(">", "&gt;")
+                # addr:  bytes  instruction
+                dis_line_re = re.compile(
+                    r"^\s*([0-9a-fA-F]+):\s+([0-9a-fA-F ]+)\s*(.*)$"
+                )
+
+                for raw_line, is_target in final_lines:
+                    line = raw_line.rstrip("\n")
+
+                    # Try to parse a normal disassembly line
+                    m = dis_line_re.match(line)
+                    if not m:
+                        # Labels / source lines / empty
+                        text = html_escape(line)
+
+                        if not text.strip():
+                            iprint("&nbsp;", color=COLOR_ADDR_BASE)
+                            continue
+
+                        if is_target:
+                            # Entire label/source line in RED
+                            html_line = (
+                                f'<span style="color:{COLOR_RED}; font-weight:bold;">'
+                                f'!!! &emsp;{text} !!!'
+                                f'</span>'
+                            )
+                        else:
+                            html_line = f'<span style="color:{COLOR_GREY};">{text}</span>'
+
+                        # Indent inside the disassembly block
+                        html_line = "&nbsp;&nbsp;" + html_line
+                        iprint(html_line, color=COLOR_ADDR_BASE)
+                        continue
+
+                    # Parsed instruction parts
+                    addr_str, bytes_str, asm_part = m.groups()
+                    addr_str = addr_str.strip()
+                    bytes_str = bytes_str.strip()
+                    asm_part = asm_part.strip()
+
+                    if is_target:
+                        # ============================
+                        # CRASHING LINE: FULL RED
+                        # ============================
+                        # We drop the address (like your example) and show:
+                        # !!!   bytes   instr   !!!
+                        # all in red.
+                        target_text = ""
+
+                        if bytes_str:
+                            target_text += html_escape(bytes_str)
+                        if asm_part:
+                            # little gap between bytes and mnemonic
+                            target_text += "&emsp;&emsp;" + html_escape(asm_part)
+
+                        html_line = (
+                            f'<span style="color:{COLOR_RED}; font-weight:bold;">'
+                            f'!!! &emsp;{target_text} !!!'
+                            f'</span>'
+                        )
+                        html_line = "&nbsp;&nbsp;" + html_line
+                        iprint(html_line, color=COLOR_ADDR_BASE)
+                        continue
+
+                    # ============================
+                    # NORMAL INSTRUCTION LINES
+                    # ============================
+
+                    # Address (left, not indented)
+                    addr_html = (
+                        f'<span style="color:{COLOR_ADDR_BASE};">'
+                        f'{html_escape(addr_str)}:</span>'
                     )
-                    safe_lines.append(l_safe)
 
-                # Extra indentation inside the disassembly block
-                indented_lines = []
-                for l in safe_lines:
-                    if l.strip():
-                        indented_lines.append("    " + l)
-                    else:
-                        indented_lines.append(l)
+                    # Opcode bytes
+                    bytes_html = ""
+                    if bytes_str:
+                        bytes_html = (
+                            f'<span style="color:{COLOR_TEAL};">'
+                            f'{html_escape(bytes_str)}</span>'
+                        )
 
-                iprint("\n".join(indented_lines))
+                    # Instruction (mnemonic + operands), with registers colored
+                    asm_html = ""
+                    if asm_part:
+                        parts = asm_part.split(None, 1)
+                        mnemonic = parts[0]
+                        rest = parts[1] if len(parts) > 1 else ""
+
+                        mnemonic_html = (
+                            f'<span style="color:{COLOR_BLUE};">'
+                            f'{html_escape(mnemonic)}</span>'
+                        )
+
+                        if rest:
+                            rest_html = colorize_registers(rest)
+                            asm_html = f"{mnemonic_html} {rest_html}"
+                        else:
+                            asm_html = mnemonic_html
+
+                    # Layout: addr :  <TAB> bytes  <TAB>  instr
+                    # Use &emsp; to simulate the indentation in your example.
+                    core_html = addr_html
+                    if bytes_html:
+                        core_html += "&emsp;" + bytes_html
+                    if asm_html:
+                        # EXTRA INDENT for instruction part
+                        core_html += "&emsp;&emsp;" + asm_html
+
+                    # Small left indent inside the disassembly block
+                    html_line = "&nbsp;&nbsp;" + core_html
+
+                    iprint(html_line, color=COLOR_ADDR_BASE)
             else:
                 iprint("(No disassembly output found)", color=COLOR_GREY)
 
         except FileNotFoundError:
             raise FileNotFoundError(f"Tool not found: {cmd}")
         except Exception:
-            # Simplified, don't dump raw stderr here (already handled above)
             iprint("Objdump error", color=COLOR_GREY)
-
-
 
 
     def addr2line(self, offset):
