@@ -411,8 +411,15 @@ class VitaDeckModern(QWidget):
     def check_launch_queue(self, status_msg):
         # When the transfer becomes idle or reports success, launch queued app
         if self._pending_app_launch and (status_msg == "Idle" or "Success" in status_msg):
-            QTimer.singleShot(500, lambda: self.send_command(f"launch {self._pending_app_launch}"))
-            self.tab_logging.append_log(f"Upload complete. Launching {self._pending_app_launch}...", "#3ecf4c")
+            # CAPTURE THE VALUE HERE
+            app_id = self._pending_app_launch
+            
+            # Use the captured 'app_id' variable inside the lambda
+            QTimer.singleShot(500, lambda: self.send_command(f"launch {app_id}"))
+            
+            # This log is fine because it runs immediately
+            self.tab_logging.append_log(f"Upload complete. Launching {app_id}...", "#3ecf4c")
+            
             self._pending_app_launch = None
 
     # ==========================================

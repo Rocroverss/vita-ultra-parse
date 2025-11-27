@@ -18,9 +18,11 @@ import re
 
 # Importaciones de PySide6
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-                               QLabel, QTextEdit, QFileDialog, QMessageBox, QInputDialog)
-from PySide6.QtCore import QThread, Signal, Slot, Qt, QDir
-from PySide6.QtGui import QTextCursor
+                               QLabel, QTextEdit, QFileDialog, QMessageBox, QInputDialog,
+                               QApplication) # Added QApplication
+from PySide6.QtCore import QThread, Signal, Slot, Qt, QDir, QTimer, QByteArray # Added QTimer, QByteArray
+from PySide6.QtGui import QTextCursor, QIcon, QPixmap, QPainter # Added QIcon, QPixmap, QPainter
+from PySide6.QtSvg import QSvgRenderer # Added QSvgRenderer
 
 # ==========================================
 # COLORS & UTILITIES
@@ -36,6 +38,14 @@ COLOR_ORANGE = "#FF8C00"
 COLOR_THREAD_NAME = "#4EC9B0"
 COLOR_SYM_NAME = "#85C664"
 COLOR_ADDR_BASE = "#FFFFFF"
+COLOR_BTN_BG = "#2d2d2d" # Added from build.py
+
+# Added SVG Icon definition (Copied from build.py)
+COPY_ICON_SVG = """
+<svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+    <path fill="#D4D4D4" d="m6 19v2c0 .621.52 1 1 1h2v-1.5h-1.5v-1.5zm7.5 3h-3.5v-1.5h3.5zm4.5 0h-3.5v-1.5h3.5zm4-3h-1.5v1.5h-1.5v1.5h2c.478 0 1-.379 1-1zm-1.5-1v-3.363h1.5v3.363zm0-4.363v-3.637h1.5v3.637zm-13-3.637v3.637h-1.5v-3.637zm11.5-4v1.5h1.5v1.5h1.5v-2c0-.478-.379-1-1-1zm-10 0h-2c-.62 0-1 .519-1 1v2h1.5v-1.5h1.5zm4.5 1.5h-3.5v-1.5h3.5zm3-1.5v-2.5h-13v13h2.5v-1.863h1.5v3.363h-4.5c-.48 0-1-.379-1-1v-14c0-.481.38-1 1-1h14c.621 0 1 .522 1 1v4.5h-3.5v-1.5z" fill-rule="nonzero"/>
+</svg>
+"""
 
 _log_callback = None
 _indent_level = 0
@@ -1082,8 +1092,41 @@ class CoreDumpTab(QWidget):
 
         layout.addLayout(controls_layout)
 
-        # Log Output
-        layout.addWidget(QLabel("Core Dump Analysis Output:"))
+        # --- OUTPUT HEADER WITH COPY BUTTON (Copied from build.py) ---
+        header_layout = QHBoxLayout()
+        header_layout.addWidget(QLabel("Core Dump Analysis Output:"))
+        header_layout.addStretch() # Push button to the right
+
+        # Create Copy Button
+        self.btn_copy = QPushButton()
+        self.btn_copy.setToolTip("Copy Log to Clipboard")
+        self.btn_copy.setFixedSize(32, 32) # Small square button
+
+        # Set Icon from SVG String
+        self.btn_copy.setIcon(self.create_icon_from_string(COPY_ICON_SVG))
+        self.btn_copy.setIconSize(self.btn_copy.size() * 0.6) # Scale icon slightly down
+
+        # Style the Copy Button
+        self.btn_copy.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLOR_BTN_BG};
+                border-radius: 6px;
+                border: 1px solid #3E3E3E;
+            }}
+            QPushButton:hover {{
+                background-color: #3d3d3d;
+                border: 1px solid #555;
+            }}
+            QPushButton:pressed {{
+                background-color: #569CD6;
+            }}
+        """)
+        self.btn_copy.clicked.connect(self.copy_output_to_clipboard)
+        header_layout.addWidget(self.btn_copy)
+
+        layout.addLayout(header_layout)
+
+        # Log Output Area
         self.core_output = QTextEdit()
         self.core_output.setReadOnly(True)
         self.core_output.setObjectName("logOutput")
@@ -1099,6 +1142,37 @@ class CoreDumpTab(QWidget):
         self.core_output.setFont(font)
 
         layout.addWidget(self.core_output)
+
+    # --- New Methods for Copy Button ---
+    def create_icon_from_string(self, svg_str):
+        """Helper to convert SVG string to QIcon"""
+        renderer = QSvgRenderer(QByteArray(svg_str.encode()))
+        pixmap = QPixmap(32, 32)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        renderer.render(painter)
+        painter.end()
+        return QIcon(pixmap)
+
+    def copy_output_to_clipboard(self):
+        """Copies content of the analysis output to clipboard"""
+        clipboard = QApplication.clipboard()
+        # Note: toPlainText() extracts text without HTML tags, which is usually better for sharing
+        clipboard.setText(self.core_output.toPlainText())
+
+        # Flash the button green briefly to indicate success
+        original_style = self.btn_copy.styleSheet()
+        self.btn_copy.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLOR_SYM_NAME};
+                border-radius: 6px;
+                border: 1px solid #3E3E3E;
+            }}
+        """)
+        # Reset style after 200ms
+        QTimer.singleShot(200, lambda: self.btn_copy.setStyleSheet(original_style))
+    # --- End New Methods for Copy Button ---
+
 
     def load_elf_file(self):
         filename, _ = QFileDialog.getOpenFileName(

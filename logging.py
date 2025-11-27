@@ -73,8 +73,14 @@ class LoggingTab(QWidget):
         self.server_thread.log_signal.connect(self.append_log)
         self.server_thread.start()
 
-    def append_log(self, text):
-        self.log_output.appendPlainText(text)
+    # FIX APPLIED HERE: Added 'color' argument with a default value of None
+    def append_log(self, text, color=None):
+        if color:
+            # Use appendHtml to render the color
+            # Note: <span> style is used to apply the color
+            self.log_output.appendHtml(f'<span style="color: {color};">{text}</span>')
+        else:
+            self.log_output.appendPlainText(text)
 
     def restart_server(self, port):
         self.server_thread.stop()
