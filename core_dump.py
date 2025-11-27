@@ -544,17 +544,33 @@ class ElfParserObj:
         end = abs_addr + 0x10
 
         cmd = self.get_tool_command("arm-vita-eabi-objdump")
-        args = [cmd, "-d", "-S",
-                f"--start-address=0x{start:x}",
-                f"--stop-address=0x{end:x}",
-                self.filename]
+        args = [
+            cmd, "-d", "-S",
+            f"--start-address=0x{start:x}",
+            f"--stop-address=0x{end:x}",
+            self.filename,
+        ]
 
         if thumb:
-            args += ['-Mforce-thumb']
+            args += ["-Mforce-thumb"]
 
         try:
-            output = subprocess.check_output(args, stderr=subprocess.DEVNULL)
-            text_output = output.decode('utf-8', errors='replace')
+            # Capture BOTH stdout and stderr so we can show objdump warnings
+            proc = subprocess.run(
+                args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+            stderr_text = proc.stderr.decode("utf-8", errors="replace")
+            if stderr_text.strip():
+                # Print objdump warnings (like ELF/source mismatch)
+                for line in stderr_text.splitlines():
+                    if line.strip():
+                        iprint(line, color=COLOR_YELLOW)
+
+            text_output = proc.stdout.decode("utf-8", errors="replace")
             lines = text_output.splitlines()
 
             keep = False
@@ -564,21 +580,46 @@ class ElfParserObj:
                 if "Disassembly of section" in line:
                     keep = True
                     continue
-                if keep:
-                    if f"{abs_addr:x}:" in line:
-                        line = "!!! " + line.strip() + " !!!"
-                    final_lines.append(line)
+                if not keep:
+                    continue
+
+                # Highlight the exact instruction at abs_addr
+                if f"{abs_addr:x}:" in line:
+                    line = "!!! " + line.strip() + " !!!"
+
+                final_lines.append(line)
 
             if final_lines:
-                iprint("\n".join(final_lines))
+                # HTML-escape so things like "<CallObjectMethodV+0x22>" render correctly
+                safe_lines = []
+                for l in final_lines:
+                    l_safe = (
+                        l.replace("&", "&amp;")
+                         .replace("<", "&lt;")
+                         .replace(">", "&gt;")
+                    )
+                    safe_lines.append(l_safe)
+
+                # Extra indentation inside the disassembly block
+                indented_lines = []
+                for l in safe_lines:
+                    if l.strip():
+                        indented_lines.append("    " + l)
+                    else:
+                        indented_lines.append(l)
+
+                iprint("\n".join(indented_lines))
             else:
                 iprint("(No disassembly output found)", color=COLOR_GREY)
 
         except FileNotFoundError:
             raise FileNotFoundError(f"Tool not found: {cmd}")
-        except subprocess.CalledProcessError:
-            # Simplified, don't dump objdump stderr (often noisy)
-            iprint(f"Objdump error", color=COLOR_GREY)
+        except Exception:
+            # Simplified, don't dump raw stderr here (already handled above)
+            iprint("Objdump error", color=COLOR_GREY)
+
+
+
 
     def addr2line(self, offset):
         if not self.a2l:
