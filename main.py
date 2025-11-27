@@ -195,8 +195,6 @@ class HelpTab(QWidget):
                 </li>
             </ul>
         """)
-
-        
         layout.addWidget(help_text)
 
 # ==========================================
@@ -351,6 +349,9 @@ class VitaDeckModern(QWidget):
         self.setWindowTitle("Vitadeck - Manager & Debugger")
         self.resize(1200, 700)
         
+        # FIX: Init pending launch flag
+        self._pending_app_launch = None
+
         self.cmd_thread = CommandWorker()
         self.cmd_thread.start()
 
@@ -373,7 +374,9 @@ class VitaDeckModern(QWidget):
         
         self.tab_transfer = FileTransferTab()
         self.tab_transfer.ftp_thread.status_signal.connect(self.update_connection_status)
+        # FIX: Connect progress for status + launch queue
         self.tab_transfer.ftp_thread.progress_signal.connect(self.update_transfer_status)
+        self.tab_transfer.ftp_thread.progress_signal.connect(self.check_launch_queue)
         self.tabs.addTab(self.tab_transfer, "File Transfer")
         
         self.tab_sdk = SdkInstallationTab()
@@ -402,9 +405,19 @@ class VitaDeckModern(QWidget):
         self.cmd_thread.set_host(settings.get("vita_ip", "192.168.1.100"))
 
     # ==========================================
+    # FIX: Launch-after-upload synchronization
+    # ==========================================
+    @Slot(str)
+    def check_launch_queue(self, status_msg):
+        # When the transfer becomes idle or reports success, launch queued app
+        if self._pending_app_launch and (status_msg == "Idle" or "Success" in status_msg):
+            QTimer.singleShot(500, lambda: self.send_command(f"launch {self._pending_app_launch}"))
+            self.tab_logging.append_log(f"Upload complete. Launching {self._pending_app_launch}...", "#3ecf4c")
+            self._pending_app_launch = None
+
+    # ==========================================
     # SETTINGS/STYLE METHODS
     # ==========================================
-
     @Slot(int)
     def restart_logging_server(self, port):
         self.tab_logging.restart_server(port)
@@ -652,6 +665,7 @@ class VitaDeckModern(QWidget):
             self.exec_entry.setText(filename)
             settings.set("exec_path", filename)
 
+    # FIX: Updated upload_and_launch to queue launch after upload completes
     def upload_and_launch(self):
         local_path = self.exec_entry.text().strip()
         app_id = self.appid_entry.text().strip()
@@ -667,16 +681,19 @@ class VitaDeckModern(QWidget):
         
         reply = QMessageBox.question(
             self, "Confirm Upload & Launch", 
-            f"Upload '{os.path.basename(local_path)}' to '{remote_path}' and launch '{app_id}'?\n\nNOTE: This will overwrite the existing eboot.bin! Confirm to replace.", 
+            f"Upload '{os.path.basename(local_path)}' to '{remote_path}' and launch '{app_id}'?\n\nNOTE: This will overwrite the existing eboot.bin!", 
             QMessageBox.Yes | QMessageBox.No
         )
         if reply == QMessageBox.No:
             return
 
-        self.tab_logging.append_log(f"Starting forced upload of {os.path.basename(local_path)} to {remote_path}...", "orange")
+        self.tab_logging.append_log(f"Queueing upload of {os.path.basename(local_path)}...", "orange")
+        # remember what to launch once transfer completes
+        self._pending_app_launch = app_id
+        # force_replace=True
         self.tab_transfer.ftp_thread.add_command('upload', local_path, remote_path, True)
-        self.send_command(f"launch {app_id}")
-
+        # show logs while waiting
+        self.tabs.setCurrentIndex(0)
 
     def launch_title_id(self):
         title_id = self.launch_id_entry.text().strip()
@@ -749,7 +766,6 @@ class VitaDeckModern(QWidget):
         self.transfer_label.setText(text)
         self.transfer_dot.set_color(color)
         self.transfer_label.setStyleSheet(f"color: {color};")
-
 
     def closeEvent(self, event):
         self.tab_logging.cleanup()
