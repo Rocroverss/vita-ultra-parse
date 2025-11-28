@@ -9,19 +9,39 @@ from PySide6.QtCore import QProcess, Slot, QByteArray, Qt
 from PySide6.QtGui import QTextCursor, QColor, QTextCharFormat, QIcon, QPixmap, QPainter
 from PySide6.QtSvg import QSvgRenderer
 from utils import settings
+import re
 
 # --- COLOR DEFINITIONS ---
-COLOR_RED = "#F44747"       
-COLOR_YELLOW = "#FFD700"    
-COLOR_GREY = "#D4D4D4"      
-COLOR_BLUE = "#569CD6"      
-COLOR_TEAL = "#00FFFF"      
-COLOR_ORANGE = "#FF8C00"    
-COLOR_THREAD_NAME = "#4EC9B0" 
-COLOR_SYM_NAME = "#85C664"    
-COLOR_ADDR_BASE = "#FFFFFF"   
+COLOR_RED = "#F44747"         # For errors
+COLOR_YELLOW = "#FFD700"      # Standard make messages
+COLOR_GREY = "#D4D4D4"        # Default text (now explicitly used for file paths)
+COLOR_BLUE = "#569CD6"        
+COLOR_DARK_BLUE = "#007ACC"   # Dark blue for progress % and built targets
+COLOR_TEAL = "#00FFFF"        # Turquoise for notes (ANSI 36)
+COLOR_PURPLE = "#C586C0"      # Purple for warnings (ANSI 35)
+COLOR_LIGHT_GREEN = "#85C664" # Light Green for "Copying raw ELF..."
+COLOR_DARK_GREEN = "#487C39"  # Dark Green for final 100% build complete and Build Complete message
+COLOR_THREAD_NAME = "#4EC9B0" # Running command headers
 COLOR_BACKGROUND = "#1E1E1E" 
 COLOR_BTN_BG = "#2d2d2d"      
+
+# Mapping common ANSI codes to YOUR new defined colors
+ANSI_COLOR_MAP = {
+    '31': COLOR_RED,        # Errors
+    '32': COLOR_LIGHT_GREEN, 
+    '33': COLOR_YELLOW,
+    '34': COLOR_BLUE,
+    '35': COLOR_PURPLE,     # Warnings (Magenta/Purple)
+    '36': COLOR_TEAL,       # Notes (Cyan/Turquoise)
+    '0': COLOR_GREY,        # Reset
+}
+
+# The regular expression to find ANSI escape sequences
+ANSI_ESCAPE = re.compile(r'(\x1B\[[\d;]*[mK])')
+
+# REGEX to find file paths, lines, and columns: 
+# Looks for /path/to/file.(c|cpp|h|...) followed by :line:column:
+FILE_PATH_REGEX = re.compile(r'((?:/[^:]+)+\.[a-z]+:\d+:\d+:)', re.IGNORECASE)
 
 # Your SVG Icon (I added fill="#D4D4D4" so it is visible on the dark button)
 COPY_ICON_SVG = """
@@ -47,6 +67,7 @@ class BuildTab(QWidget):
         top_row_layout = QHBoxLayout()
         
         # 1. Directory Group
+        
         dir_group = QGroupBox("Build Directory")
         dir_layout = QVBoxLayout()
         path_row = QHBoxLayout()
@@ -57,11 +78,23 @@ class BuildTab(QWidget):
         path_row.addWidget(self.build_dir_input)
         path_row.addWidget(btn_browse)
         
+        # --- Button layout on the same row ---
+        button_row = QHBoxLayout()
+        
+        btn_open_folder = QPushButton("Open Build Directory") 
+        btn_open_folder.clicked.connect(self.open_build_folder) 
+        
         btn_term = QPushButton("Open Terminal in Build Directory")
         btn_term.clicked.connect(self.open_terminal_in_build_dir)
+        
+        button_row.addWidget(btn_open_folder)
+        button_row.addWidget(btn_term)
+        # --- END Button layout fix ---
+        
         dir_layout.addLayout(path_row)
-        dir_layout.addWidget(btn_term)
+        dir_layout.addLayout(button_row)
         dir_group.setLayout(dir_layout)
+        
 
         # 2. Commands Group
         self.cmd_group = QGroupBox("Build Commands")
@@ -104,13 +137,11 @@ class BuildTab(QWidget):
                 border: 1px solid #555;
             }}
             QPushButton:pressed {{
-                background-color: #569CD6;
+                background-color: {COLOR_BLUE};
             }}
         """)
         self.btn_copy.clicked.connect(self.copy_output_to_clipboard)
         header_layout.addWidget(self.btn_copy)
-
-        layout.addLayout(header_layout)
 
         # Output Text Area
         self.build_output = QPlainTextEdit()
@@ -125,6 +156,23 @@ class BuildTab(QWidget):
             }}
         """)
         layout.addWidget(self.build_output)
+
+    def open_build_folder(self):
+            """Opens the current build directory in the system's default file explorer."""
+            current_dir = self.build_dir
+            if not os.path.isdir(current_dir):
+                QMessageBox.warning(self, "Error", "Invalid build directory.")
+                return
+
+            if sys.platform == "win32":
+                subprocess.Popen(['explorer', current_dir])
+            elif sys.platform == "darwin":
+                subprocess.Popen(['open', current_dir])
+            else:
+                try:
+                    subprocess.Popen(['xdg-open', current_dir])
+                except FileNotFoundError:
+                    QMessageBox.warning(self, "Error", "Could not find 'xdg-open'.")
 
     def create_icon_from_string(self, svg_str):
         """Helper to convert SVG string to QIcon"""
@@ -145,7 +193,7 @@ class BuildTab(QWidget):
         original_style = self.btn_copy.styleSheet()
         self.btn_copy.setStyleSheet(f"""
             QPushButton {{
-                background-color: {COLOR_SYM_NAME};
+                background-color: {COLOR_LIGHT_GREEN};
                 border-radius: 6px;
             }}
         """)
@@ -163,16 +211,34 @@ class BuildTab(QWidget):
     def open_terminal_in_build_dir(self):
         current_dir = self.build_dir
         if not os.path.isdir(current_dir):
+            QMessageBox.warning(self, "Error", "Invalid build directory.")
             return
         if sys.platform == "win32":
             subprocess.Popen(['start', 'cmd', '/K', 'cd', '/D', current_dir], shell=True)
         elif sys.platform == "darwin":
             subprocess.Popen(['open', '-a', 'Terminal', current_dir])
         else:
+            # FIX: Robust command for Linux terminal working directory
             try:
-                subprocess.Popen(['x-terminal-emulator', '--working-directory=' + current_dir])
-            except FileNotFoundError:
-                subprocess.Popen(['gnome-terminal', '--working-directory=' + current_dir])
+                cd_command = f'bash -c "cd \\"{current_dir}\\" && exec bash"'
+                
+                terminal_cmds = [
+                    ['x-terminal-emulator', '-e', cd_command],
+                    ['gnome-terminal', '--command', cd_command],
+                    ['konsole', '--separate', '-e', cd_command],
+                ]
+
+                for cmd in terminal_cmds:
+                    try:
+                        subprocess.Popen(cmd)
+                        return
+                    except FileNotFoundError:
+                        continue
+                
+                QMessageBox.warning(self, "Error", "Could not find a working terminal emulator.")
+            
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Error opening terminal: {e}")
 
     def run_build_sequence(self, mode):
         if self.build_process.state() != QProcess.NotRunning:
@@ -188,13 +254,14 @@ class BuildTab(QWidget):
         if mode == "rebuild":
             self.build_queue = [['make', ['clean']], ['make', []]]
         elif mode == "full_build":
-            self.build_queue = [['python_cleanup'], ['cmake', ['..']], ['make', []]]
+            # FIX: Ensure 'python_cleanup' has a second, empty argument list to prevent IndexError.
+            self.build_queue = [['python_cleanup', []], ['cmake', ['..']], ['make', []]]
         
         self.execute_next_command()
 
     def execute_next_command(self):
         if not self.build_queue:
-            self.append_colored_line("--- Build Complete ---", COLOR_SYM_NAME)
+            self.append_colored_line("--- Build Complete ---", COLOR_DARK_GREEN)
             self.set_buttons_enabled(True)
             return
 
@@ -235,7 +302,7 @@ class BuildTab(QWidget):
         fmt.setForeground(QColor(color_hex))
         cursor = self.build_output.textCursor()
         cursor.setCharFormat(fmt)
-        cursor.insertText(text + "\n")
+        cursor.insertText(text)
         self.build_output.setTextCursor(cursor)
         sb = self.build_output.verticalScrollBar()
         sb.setValue(sb.maximum())
@@ -248,29 +315,92 @@ class BuildTab(QWidget):
         except:
             return
 
-        lines = text_chunk.splitlines()
-        for line in lines:
-            line_lower = line.lower()
-            color = COLOR_GREY 
-            if "error:" in line_lower or "failed" in line_lower or "fatal" in line_lower:
-                color = COLOR_RED
-            elif "warning:" in line_lower:
-                color = COLOR_ORANGE
-            elif "[100%]" in line:
-                color = COLOR_SYM_NAME 
-            elif "scanning dependencies" in line_lower:
-                color = COLOR_TEAL
-            elif "built target" in line_lower or "linking" in line_lower:
-                color = COLOR_BLUE
-            elif "make" in line_lower and ("entering" in line_lower or "leaving" in line_lower):
-                color = COLOR_YELLOW
+        parts = ANSI_ESCAPE.split(text_chunk)
+        current_color = COLOR_GREY 
 
-            self.append_colored_line(line, color)
+        for part in parts:
+            if not part:
+                continue
+            
+            # 1. Update current_color based on ANSI codes from the compiler
+            if ANSI_ESCAPE.match(part):
+                code_str = part[2:-1] 
+                codes = code_str.split(';')
+                for code in codes:
+                    if code in ANSI_COLOR_MAP:
+                        current_color = ANSI_COLOR_MAP[code]
+                    elif code == '0': 
+                        current_color = COLOR_GREY
+            
+            # 2. Process actual text and apply custom overrides
+            else:
+                lines = part.split('\n')
+                for i, line in enumerate(lines):
+                    
+                    output_line = line
+                    output_color = current_color
+                    line_lower = output_line.lower()
+                    
+                    # --- Custom Color Override Logic ---
+                    
+                    # A. File Path Color Fix (MUST RUN FIRST to apply grey to paths)
+                    match = FILE_PATH_REGEX.search(output_line)
+                    if match:
+                        path_text = match.group(1)
+                        # Split the line into three parts: before path, path, and after path
+                        pre_path = output_line[:match.start()]
+                        post_path = output_line[match.end():]
+                        
+                        # Apply original color to text before path
+                        if pre_path:
+                            self.append_colored_line(pre_path, output_color)
+                            
+                        # Apply GREY to the path itself
+                        self.append_colored_line(path_text, COLOR_GREY)
+                        
+                        # Update output_line to be the remainder after the path
+                        output_line = post_path
+                        
+                        # Skip the rest of the standard logic for this loop, continue with remaining text below
+                        if output_line:
+                            self.append_colored_line(output_line, output_color)
+                        
+                        if i < len(lines) - 1:
+                            self.append_colored_line('\n', COLOR_GREY)
+                        continue # Move to the next line/part
+                        
+
+                    # B. Progress % and Built Target (Dark Blue)
+                    if re.match(r'\[\s*\d+%\]', line):
+                        output_color = COLOR_DARK_BLUE
+                    
+                    # C. Final 100% Build Completion (Dark Green)
+                    if line_lower.startswith("[100%]") and ("building vpk" in line_lower or "built target ncsj.vpk" in line_lower):
+                        output_color = COLOR_DARK_GREEN
+
+                    # D. Copying raw ELF (Light Green)
+                    if "copying raw elf" in line_lower:
+                        output_color = COLOR_LIGHT_GREEN
+                        
+                    # E. Errors (Red)
+                    if 'error:' in line_lower or 'failed' in line_lower or 'fatal' in line_lower:
+                        output_color = COLOR_RED
+                    
+                    # F. Warnings (Purple) and Notes (Teal) are handled by the ANSI parser setting current_color (35/36).
+                    
+                    # --- End Custom Color Override Logic ---
+                    
+                    # Append the whole line with the determined color
+                    if line:
+                        self.append_colored_line(output_line, output_color)
+                    
+                    if i < len(lines) - 1:
+                        self.append_colored_line('\n', COLOR_GREY)
 
     @Slot(int, QProcess.ExitStatus)
     def build_process_finished(self, exitCode, exitStatus):
         if exitCode != 0:
-            self.append_colored_line(f"\n!!! Command Failed (Code: {exitCode}) !!!", COLOR_RED)
+            self.append_colored_line(f"\n!!! Command Failed (Code: {exitCode}) !!!\n", COLOR_RED)
             self.set_buttons_enabled(True)
         else:
             self.execute_next_command()
