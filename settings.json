@@ -1,13 +1,33 @@
 {
-    "vita_ip": "192.168.0.21",
-    "vita_port": 1337,
-    "log_port": 8080,
-    "sdk_path": "/usr/local/vitasdk",
-    "dump_folder": "C:\\Users\\rocro\\Desktop\\vita-ultra-parse",
-    "last_build_dir": "/home/mint/Desktop/rinnetutorial/ncsj/build",
-    "launch_title_id": "NCSJROCRO",
-    "font_size": 10,
-    "exec_path": "/home/mint/Desktop/rinnetutorial/ncsj/build/eboot.bin",
-    "target_app_id": "NCSJROCRO",
-    "log_font_size": 11
+    "current_workspace": "daklans2",
+    "workspaces": {
+        "Default": {
+            "vita_ip": "192.168.0.21",
+            "vita_port": 1337,
+            "log_port": 8080,
+            "sdk_path": "/usr/local/vitasdk",
+            "dump_folder": "C:\\Users\\rocro\\Desktop\\vita-ultra-parse",
+            "last_build_dir": "/home/mint/Desktop/rinnetutorial/ncsj/build",
+            "launch_title_id": "NCSJROCRO",
+            "font_size": 10,
+            "log_font_size": 11,
+            "exec_path": "/home/mint/Desktop/rinnetutorial/ncsj/build/eboot.bin",
+            "target_app_id": "NCSJROCRO",
+            "base_font_size": 10
+        },
+        "daklans2": {
+            "vita_ip": "192.168.0.21",
+            "vita_port": 1337,
+            "log_port": 8080,
+            "sdk_path": "/usr/local/vitasdk",
+            "dump_folder": "C:\\Users\\rocro\\Desktop\\vita-ultra-parse",
+            "last_build_dir": "/home/mint/Desktop/rinnetutorial/ncsj/build",
+            "launch_title_id": "NCSJROCRO",
+            "font_size": 10,
+            "log_font_size": 11,
+            "exec_path": "/home/mint/Desktop/rinnetutorial/ncsj/build/eboot.bin",
+            "target_app_id": "darklans",
+            "base_font_size": 10
+        }
+    }
 }
