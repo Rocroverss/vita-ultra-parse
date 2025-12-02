@@ -5,7 +5,7 @@ import subprocess
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
                                QLabel, QLineEdit, QGroupBox, QPlainTextEdit, 
                                QFileDialog, QMessageBox, QApplication)
-from PySide6.QtCore import QProcess, Slot, QByteArray, Qt
+from PySide6.QtCore import QProcess, Slot, QByteArray, Qt, QTimer
 from PySide6.QtGui import QTextCursor, QColor, QTextCharFormat, QIcon, QPixmap, QPainter
 from PySide6.QtSvg import QSvgRenderer
 from utils import settings
@@ -14,7 +14,7 @@ import re
 # --- COLOR DEFINITIONS ---
 COLOR_RED = "#F44747"         # For errors
 COLOR_YELLOW = "#FFD700"      # Standard make messages
-COLOR_GREY = "#D4D4D4"        # Default text (now explicitly used for file paths)
+COLOR_GREY = "#D4D4D4"        # Default text (explicitly used for file paths)
 COLOR_BLUE = "#569CD6"        
 COLOR_DARK_BLUE = "#007ACC"   # Dark blue for progress % and built targets
 COLOR_TEAL = "#00FFFF"        # Turquoise for notes (ANSI 36)
@@ -43,7 +43,7 @@ ANSI_ESCAPE = re.compile(r'(\x1B\[[\d;]*[mK])')
 # Looks for /path/to/file.(c|cpp|h|...) followed by :line:column:
 FILE_PATH_REGEX = re.compile(r'((?:/[^:]+)+\.[a-z]+:\d+:\d+:)', re.IGNORECASE)
 
-# Your SVG Icon (I added fill="#D4D4D4" so it is visible on the dark button)
+# --- COPY ICON SVG (RESTORED) ---
 COPY_ICON_SVG = """
 <svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
     <path fill="#D4D4D4" d="m6 19v2c0 .621.52 1 1 1h2v-1.5h-1.5v-1.5zm7.5 3h-3.5v-1.5h3.5zm4.5 0h-3.5v-1.5h3.5zm4-3h-1.5v1.5h-1.5v1.5h2c.478 0 1-.379 1-1zm-1.5-1v-3.363h1.5v3.363zm0-4.363v-3.637h1.5v3.637zm-13-3.637v3.637h-1.5v-3.637zm11.5-4v1.5h1.5v1.5h1.5v-2c0-.478-.379-1-1-1zm-10 0h-2c-.62 0-1 .519-1 1v2h1.5v-1.5h1.5zm4.5 1.5h-3.5v-1.5h3.5zm3-1.5v-2.5h-13v13h2.5v-1.863h1.5v3.363h-4.5c-.48 0-1-.379-1-1v-14c0-.481.38-1 1-1h14c.621 0 1 .522 1 1v4.5h-3.5v-1.5z" fill-rule="nonzero"/>
@@ -111,7 +111,7 @@ class BuildTab(QWidget):
         top_row_layout.addWidget(self.cmd_group, 2)
         layout.addLayout(top_row_layout)
 
-        # --- OUTPUT HEADER WITH COPY BUTTON ---
+        # --- OUTPUT HEADER WITH COPY BUTTON (RESTORED) ---
         header_layout = QHBoxLayout()
         header_layout.addWidget(QLabel("Build Output:"))
         header_layout.addStretch() # Push button to the right
@@ -142,6 +142,8 @@ class BuildTab(QWidget):
         """)
         self.btn_copy.clicked.connect(self.copy_output_to_clipboard)
         header_layout.addWidget(self.btn_copy)
+
+        layout.addLayout(header_layout) # ADDED BACK TO LAYOUT
 
         # Output Text Area
         self.build_output = QPlainTextEdit()
@@ -198,7 +200,6 @@ class BuildTab(QWidget):
             }}
         """)
         # Reset style after 200ms
-        from PySide6.QtCore import QTimer
         QTimer.singleShot(200, lambda: self.btn_copy.setStyleSheet(original_style))
 
     def browse_build_dir(self):
@@ -265,6 +266,7 @@ class BuildTab(QWidget):
             self.set_buttons_enabled(True)
             return
 
+        # cmd_info is guaranteed to have 2 elements now: [command, [args]]
         cmd_info = self.build_queue.pop(0)
         cmd, args = cmd_info[0], cmd_info[1]
 

@@ -3,19 +3,99 @@ import os
 import socket
 import threading
 import re
+from typing import Optional
 
 from PySide6.QtWidgets import (
     QApplication, QWidget, QHBoxLayout, QVBoxLayout,
-    QPushButton, QLabel, QLineEdit, QGroupBox, QMessageBox,
-    QFrame, QFileDialog, QStyle, QTextEdit, QSpinBox,
-    QListWidget, QListWidgetItem, QInputDialog, QTabWidget
+    QPushButton, QLabel, QLineEdit, QTabWidget,
+    QGroupBox, QMessageBox, QFrame, QFileDialog, QStyle,
+    QTextEdit, QSpinBox, QListWidget, QListWidgetItem,
+    QInputDialog, QComboBox
 )
 from PySide6.QtGui import QColor, QPainter, QFont, QIntValidator, QIcon, QPixmap
 from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer, QSize, QByteArray
 from PySide6.QtSvg import QSvgRenderer
 
 # ==========================================
-# SVG CONSTANTS & UTILITY
+# THEME SYSTEM (icons + palette from THEMES/<theme>/theme.txt)
+# ==========================================
+
+THEMES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "THEMES")
+
+
+class Theme:
+    def __init__(self, name: str, base_dir: str):
+        self.name = name
+        self.base_dir = base_dir
+        self.palette: dict[str, str] = {}
+        self.icons: dict[str, str] = {}
+
+    def load(self):
+        self._load_palette()
+        self._load_icons()
+
+    def _load_palette(self):
+        """Parse theme.txt as simple key=value or key: value lines."""
+        theme_file = os.path.join(self.base_dir, "theme.txt")
+        palette: dict[str, str] = {}
+        if os.path.exists(theme_file):
+            try:
+                with open(theme_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#") or line.startswith("//"):
+                            continue
+                        if "=" in line:
+                            key, val = line.split("=", 1)
+                        elif ":" in line:
+                            key, val = line.split(":", 1)
+                        else:
+                            continue
+                        palette[key.strip()] = val.strip()
+            except Exception as e:
+                print(f"Warning: failed to read theme file '{theme_file}': {e}")
+        self.palette = palette
+
+    def _load_icons(self):
+        """Map logical icon keys to SVG files inside the theme folder."""
+        def icon_path(filename: str) -> str:
+            return os.path.join(self.base_dir, filename)
+
+        self.icons = {
+            "workspace": icon_path("alt-workspace.svg"),
+            "settings": icon_path("alt-setting.svg"),
+            "help": icon_path("alt-info.svg"),
+            "refresh": icon_path("alt-refresh.svg"),
+            "terminal": icon_path("alt-terminal.svg"),
+            "folder": icon_path("alt-folder.svg"),
+            "save": icon_path("alt-save-floppy.svg"),
+            "search": icon_path("alt-search.svg"),
+            "trash": icon_path("alt-trash.svg"),
+            # battery icons etc. are available if needed
+        }
+
+
+current_theme: Optional[Theme] = None
+
+
+def load_theme(theme_name: str = "default") -> Theme:
+    """Create and load a Theme instance from THEMES/<theme_name>."""
+    global current_theme
+
+    base_dir = os.path.join(THEMES_DIR, theme_name)
+    if not os.path.isdir(base_dir):
+        if theme_name != "default":
+            print(f"Warning: theme '{theme_name}' not found, falling back to 'default'")
+        base_dir = os.path.join(THEMES_DIR, "default")
+
+    theme = Theme(theme_name, base_dir)
+    theme.load()
+    current_theme = theme
+    return theme
+
+
+# ==========================================
+# SVG CONSTANTS & UTILITY (fallback icons)
 # ==========================================
 
 SETTINGS_SVG = """<?xml version="1.0" encoding="utf-8"?>
@@ -58,20 +138,32 @@ def svg_to_qicon(svg_content: str, size: int = 24) -> QIcon:
     return QIcon(pixmap)
 
 
+def qicon_from_svg_file(path: str, size: int = 24) -> QIcon:
+    """Converts an SVG file on disk into a QIcon."""
+    if not os.path.exists(path):
+        return QIcon()
+    renderer = QSvgRenderer(path)
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    renderer.render(painter)
+    painter.end()
+    return QIcon(pixmap)
+
+
 # ==========================================
-# 0. REAL MODULES OR MOCK FALLBACKS
+# REAL MODULES OR MOCK FALLBACKS
 # ==========================================
 
 try:
-    # Attempt to import real modules
-    from utils import settings
-    from logging import LoggingTab
-    from core_dump import CoreDumpTab
-    from build import BuildTab
-    from file_transfer import FileTransferTab
-    from sdk_installation import SdkInstallationTab
+    from utils import settings  # real settings
+    from logging import LoggingTab  # type: ignore
+    from core_dump import CoreDumpTab  # type: ignore
+    from build import BuildTab  # type: ignore
+    from file_transfer import FileTransferTab  # type: ignore
+    from sdk_installation import SdkInstallationTab  # type: ignore
 
-    # Ensure basic workspace API exists on real settings
+    # Make sure workspace API exists
     if not hasattr(settings, "DEFAULT_WORKSPACE_NAME"):
         settings.DEFAULT_WORKSPACE_NAME = "Default"
 
@@ -119,6 +211,7 @@ except ImportError as e:
                 "dump_folder": "",
                 "vita_port": 1337,
                 "base_font_size": 10,
+                "theme_name": "default",
             },
             "MyHomebrewProject": {
                 "log_font_size": 11,
@@ -132,6 +225,7 @@ except ImportError as e:
                 "dump_folder": "C:\\vita-parse",
                 "vita_port": 1337,
                 "base_font_size": 10,
+                "theme_name": "default",
             },
         }
         _current_workspace_name = DEFAULT_WORKSPACE_NAME
@@ -190,7 +284,8 @@ except ImportError as e:
         def __init__(self):
             super().__init__()
             layout = QVBoxLayout(self)
-            layout.addWidget(QLabel("Mock Tab Content"))
+            label = QLabel("Mock Tab (real module not found)")
+            layout.addWidget(label)
             layout.addStretch()
 
         def cleanup(self):
@@ -219,8 +314,7 @@ except ImportError as e:
             progress_signal = Signal(str)
 
             def run(self):
-                # Simulate immediate connection + idle status
-                self.status_signal.emit("Connected (FTP)", "#3ecf4c")
+                self.status_signal.emit("Connected (FTP Mock)", "#3ecf4c")
                 self.progress_signal.emit("Idle")
                 self.exec()
 
@@ -237,12 +331,12 @@ except ImportError as e:
             self.ftp_thread.start()
 
         def connect_ftp(self):
-            QMessageBox.information(self, "FTP", "Connecting FTP...")
+            QMessageBox.information(self, "FTP", "Connecting FTP (Mock)...")
             self.ftp_thread.status_signal.emit("Connecting...", "orange")
             QTimer.singleShot(
                 1000,
                 lambda: self.ftp_thread.status_signal.emit(
-                    "Connected (FTP)", "#3ecf4c"
+                    "Connected (FTP Mock)", "#3ecf4c"
                 ),
             )
 
@@ -263,12 +357,11 @@ except ImportError as e:
 
 
 # ==========================================
-# 1. SIMPLE STATUS DOT WIDGET
+# STATUS DOT
 # ==========================================
 
 class ColorDot(QWidget):
-    """A small colored circle widget for status indication."""
-
+    """Small colored circle widget."""
     def __init__(self, color="#777", size=10):
         super().__init__()
         self._color = QColor(color)
@@ -295,12 +388,10 @@ class ColorDot(QWidget):
 
 
 # ==========================================
-# 2. WORKSPACE TAB
+# WORKSPACE TAB
 # ==========================================
 
 class WorkspaceTab(QWidget):
-    """Allows creation, loading, and deletion of named settings workspaces."""
-
     workspace_changed = Signal()
 
     def __init__(self, settings_instance):
@@ -310,7 +401,6 @@ class WorkspaceTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignTop)
 
-        # Current workspace label
         self.current_label = QLabel(
             f"<b>Current Workspace:</b> {self.settings.get_current_workspace_name()}"
         )
@@ -318,7 +408,6 @@ class WorkspaceTab(QWidget):
         layout.addWidget(self.current_label)
         layout.addSpacing(10)
 
-        # List of workspaces
         list_grp = QGroupBox("Available Workspaces")
         list_layout = QVBoxLayout(list_grp)
 
@@ -330,7 +419,6 @@ class WorkspaceTab(QWidget):
         self.workspace_list.itemDoubleClicked.connect(self.load_selected)
         list_layout.addWidget(self.workspace_list)
 
-        # Action buttons
         hbox_actions = QHBoxLayout()
         self.btn_load = QPushButton("Load Selected")
         self.btn_load.clicked.connect(self.load_selected)
@@ -345,7 +433,6 @@ class WorkspaceTab(QWidget):
         layout.addWidget(list_grp)
         layout.addSpacing(10)
 
-        # Creation section
         create_grp = QGroupBox("Create New Workspace")
         create_layout = QVBoxLayout(create_grp)
 
@@ -360,10 +447,8 @@ class WorkspaceTab(QWidget):
 
     @Slot()
     def refresh_list(self):
-        """Populates the list widget with current workspaces."""
         self.workspace_list.clear()
         current_name = self.settings.get_current_workspace_name()
-
         try:
             workspaces = self.settings.get_workspaces()
         except AttributeError:
@@ -471,7 +556,7 @@ class WorkspaceTab(QWidget):
 
 
 # ==========================================
-# 3. HELP TAB
+# HELP TAB
 # ==========================================
 
 class HelpTab(QWidget):
@@ -483,7 +568,7 @@ class HelpTab(QWidget):
         icon_label = QLabel()
         icon_label.setPixmap(info_icon.pixmap(24, 24))
 
-        title_label = QLabel("ℹ️ <b>Vitadeck Manager & Debugger Help</b>")
+        title_label = QLabel("<b>Vitadeck Manager & Debugger Help</b>")
         title_label.setFont(QFont("Arial", 16, QFont.Bold))
 
         title_hbox = QHBoxLayout()
@@ -525,12 +610,13 @@ class HelpTab(QWidget):
 
 
 # ==========================================
-# 4. SETTINGS TAB
+# SETTINGS TAB (THEME-AWARE)
 # ==========================================
 
 class SettingsTab(QWidget):
     restart_log_server_signal = Signal(int)
     apply_style_signal = Signal()
+    theme_changed = Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -604,7 +690,41 @@ class SettingsTab(QWidget):
         lay_appearance.addLayout(hbox_font)
 
         layout.addWidget(grp_appearance)
+
+        # Theme selection
+        grp_theme = QGroupBox("Theme")
+        lay_theme = QVBoxLayout(grp_theme)
+
+        lay_theme.addWidget(QLabel("Select UI Theme:"))
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(self.discover_themes())
+
+        current_theme_name = settings.get("theme_name", "default")
+        idx = self.theme_combo.findText(current_theme_name)
+        if idx != -1:
+            self.theme_combo.setCurrentIndex(idx)
+
+        self.theme_combo.currentTextChanged.connect(self.on_theme_changed)
+
+        lay_theme.addWidget(self.theme_combo)
+        layout.addWidget(grp_theme)
+
         layout.addStretch()
+
+    def discover_themes(self):
+        themes = []
+        if os.path.isdir(THEMES_DIR):
+            for entry in sorted(os.listdir(THEMES_DIR)):
+                full = os.path.join(THEMES_DIR, entry)
+                if os.path.isdir(full):
+                    themes.append(entry)
+        if not themes:
+            themes = ["default"]
+        return themes
+
+    def on_theme_changed(self, name: str):
+        settings.set("theme_name", name)
+        self.theme_changed.emit(name)
 
     def update_log_port_setting(self, text):
         try:
@@ -634,6 +754,13 @@ class SettingsTab(QWidget):
 
         self.font_size_spinbox.setValue(settings.get("log_font_size", 13))
 
+        theme_name = settings.get("theme_name", "default")
+        idx = self.theme_combo.findText(theme_name)
+        if idx != -1:
+            self.theme_combo.blockSignals(True)
+            self.theme_combo.setCurrentIndex(idx)
+            self.theme_combo.blockSignals(False)
+
     def apply_port_and_restart(self):
         try:
             port = int(self.log_port_input.text())
@@ -652,7 +779,7 @@ class SettingsTab(QWidget):
 
 
 # ==========================================
-# 5. COMMAND WORKER
+# COMMAND WORKER
 # ==========================================
 
 class CommandWorker(QThread):
@@ -707,11 +834,11 @@ class CommandWorker(QThread):
 
 
 # ==========================================
-# 6. MAIN WINDOW (VitaDeckModern)
+# MAIN WINDOW (VitaDeckModern)
 # ==========================================
 
 class VitaDeckModern(QWidget):
-    # Base64 encoded SVG for the refresh button icon
+    # Base64 encoded SVG for the refresh button icon (fallback)
     REFRESH_SVG_B64 = """
         PD94bWwgdmVyc2lvbj0iMS4wIiA/Pgo8c3ZnIGZpbGw9IiNEQ0RDREMiIHdpZHRoPSI4MDBweCIgaGVpZ2h0PSI4MDBweCIgdmlld0JveD0iMCAwIDk2IDk2IiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPgo8dGl0bGUvPgo8Zz4KPHBhdGggZD0iTTk0LjI0MjIsMzcuNzU3OGE1Ljk5NzksNS45OTc5LDAsMCwwLTguNDg0NCwwbC0yLjYxLDIuNjFBMzYuMDM0NywzNi4wMzQ3LDAsMCwwLDQ4LDEyYTM1LjU1LDM1LjU1LDAsMCwwLTIxLjYyMTEsNy4zNTk0LDUuOTk3Nyw1Ljk5NzcsMCwwLDAsNy4yNDIyLDkuNTYyNUEyMy42Njc3LDIzLjY2NzcsMCwwLDEsNDgsMjQsMjMuOTU3LDIzLjA0MjksMCwwLDEsNzAuNjcyOSw0MC40NzY2bC0zLjk3LTMuMTY0MWE1Ljk5NTYsNS45OTU2LDAsMSwwLTcuNDc2NSw5LjM3NWwxNS4wMzUxLDEyYTUuOTksNS45OSwwLDAsMCw3Ljk4LC0wLjQ0NTNsMTItMTJBNS45OTc5LDUuOTk3OSwwLDAsMCw5NC4yNDIyLDM3Ljc1NzhaIi8+CjxwYXRoIGQ9Ik02Mi4zNzg5LDY3LjA3ODFBMjMuNjY3NSwyMy42Njc1LDAsMCwxLDQ4LDcyLDIzLjE2LDIzLjE2LDAsMCwxLDM1Ljc1NzgsNjcuMDc4MSw1Ljk5NzcsNS45OTc3LDAsMSwwLDI4LjUxNTYsNzYuNDg0NEEzNi4wMzQ3LDM2LjAzNDcsMCwwLDAsNDgsODRhMzUuNTUsMzUuNTUsMCwwLDAsMjEuNjIxMS03LjM1OTQsNS45OTc3LDUuOTk3NywwLDEsMC03LjI0MjItOS41NjI1WiIvPgo8L2c+Cjwvc3ZnPg==
     """
@@ -723,7 +850,6 @@ class VitaDeckModern(QWidget):
 
     @staticmethod
     def get_local_ip():
-        """Attempts to find the local machine's IP address."""
         local_ip = "127.0.0.1"
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -762,27 +888,26 @@ class VitaDeckModern(QWidget):
         self.tabs = QTabWidget()
         self.tabs.setFont(QFont("Arial", settings.get("base_font_size", 10)))
 
-        # Workspace tab
+        # Workspace tab (hidden in tab bar, accessed via icon)
         self.tab_workspace = WorkspaceTab(settings)
         self.tab_workspace.workspace_changed.connect(self.apply_workspace_settings)
-        self.tabs.addTab(self.tab_workspace, "Workspaces")
+        self.idx_workspace = self.tabs.addTab(self.tab_workspace, "Workspaces")
 
-        # Logging tab
+        # Logging tab (visible)
         self.tab_logging = LoggingTab()
         self.cmd_thread.command_output_signal.connect(self.tab_logging.append_log)
-        self.tabs.addTab(self.tab_logging, "Logging")
+        self.idx_logging = self.tabs.addTab(self.tab_logging, "Logging")
 
-        # Core dump tab
+        # Core dump tab (visible)
         self.tab_core = CoreDumpTab()
-        self.tabs.addTab(self.tab_core, "Core Dump")
+        self.idx_core = self.tabs.addTab(self.tab_core, "Core Dump")
 
-        # Build tab
+        # Build tab (visible)
         self.tab_build = BuildTab()
-        self.tabs.addTab(self.tab_build, "Build")
+        self.idx_build = self.tabs.addTab(self.tab_build, "Build")
 
-        # File transfer tab
+        # File transfer tab (visible)
         self.tab_transfer = FileTransferTab()
-        # Connect FTP thread signals if available
         if hasattr(self.tab_transfer, "ftp_thread"):
             ftp_thread = self.tab_transfer.ftp_thread
             if hasattr(ftp_thread, "status_signal"):
@@ -790,38 +915,45 @@ class VitaDeckModern(QWidget):
             if hasattr(ftp_thread, "progress_signal"):
                 ftp_thread.progress_signal.connect(self.update_transfer_status)
                 ftp_thread.progress_signal.connect(self.check_launch_queue)
-        self.tabs.addTab(self.tab_transfer, "File Transfer")
+        self.idx_transfer = self.tabs.addTab(self.tab_transfer, "File Transfer")
 
-        # SDK installation tab
+        # SDK installation tab (visible)
         self.tab_sdk = SdkInstallationTab()
-        self.tabs.addTab(self.tab_sdk, "SDK Install")
+        self.idx_sdk = self.tabs.addTab(self.tab_sdk, "SDK Install")
 
-        # Help tab
+        # Help tab (hidden in tab bar, accessed via icon)
         self.tab_help = HelpTab()
-        self.tabs.addTab(self.tab_help, "ℹ️ Help")
+        self.idx_help = self.tabs.addTab(self.tab_help, "ℹ️ Help")
 
-        # Settings tab
+        # Settings tab (hidden in tab bar, accessed via icon)
         self.tab_settings = SettingsTab()
         self.tab_settings.restart_log_server_signal.connect(self.restart_logging_server)
         self.tab_settings.apply_style_signal.connect(self.apply_style)
-        self.tabs.addTab(self.tab_settings, "Settings")
+        self.tab_settings.theme_changed.connect(self.change_theme)
+        self.idx_settings = self.tabs.addTab(self.tab_settings, "Settings")
 
         # Right-aligned SVG icon buttons in corner of the tab bar
         self.setup_tab_icons()
 
+        # Hide Workspace / Help / Settings text tabs (icon-only)
+        tab_bar = self.tabs.tabBar()
+        tab_bar.setTabVisible(self.idx_workspace, False)
+        tab_bar.setTabVisible(self.idx_help, False)
+        tab_bar.setTabVisible(self.idx_settings, False)
+
         content_and_sidebar.addWidget(self.tabs, stretch=4)
 
-        # Sidebar (IP, quick commands, etc.)
+        # Sidebar
         self.setup_sidebar(content_and_sidebar)
         main_layout.addLayout(content_and_sidebar)
 
-        # Status bar (connection, transfer, local IP)
+        # Status bar
         self.setup_status_bar(main_layout)
 
-        # Apply initial workspace settings
+        # Apply workspace settings & theme
         self.apply_workspace_settings(initial=True)
+        self._apply_tab_icons_from_theme()
 
-        # Show warning if running in mock mode
         if type(settings).__name__ == "MockSettings":
             QMessageBox.warning(
                 self,
@@ -829,9 +961,39 @@ class VitaDeckModern(QWidget):
                 "Running in MOCK mode. Some features may not work as expected because external modules are missing.",
             )
 
-    # ------------------------------
-    # Tab bar icons (Workspace, Settings, Help)
-    # ------------------------------
+    # ---- themed icon helpers ----
+    def _get_themed_icon(self, key: str, fallback_svg: str, size: int = 20) -> QIcon:
+        if current_theme and key in current_theme.icons:
+            path = current_theme.icons[key]
+            if os.path.exists(path):
+                return qicon_from_svg_file(path, size=size)
+        return svg_to_qicon(fallback_svg, size=size)
+
+    def _get_refresh_icon(self) -> QIcon:
+        if current_theme and "refresh" in current_theme.icons:
+            path = current_theme.icons["refresh"]
+            if os.path.exists(path):
+                return qicon_from_svg_file(path, size=16)
+        svg_data = QByteArray.fromBase64(self.REFRESH_SVG_B64.encode("utf-8"))
+        renderer = QSvgRenderer(svg_data)
+        pixmap = QPixmap(QSize(20, 20))
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        renderer.render(painter)
+        painter.end()
+        return QIcon(pixmap)
+
+    def _apply_tab_icons_from_theme(self):
+        if not current_theme:
+            return
+        """
+        if "terminal" in current_theme.icons and os.path.exists(current_theme.icons["terminal"]):
+            self.tabs.setTabIcon(self.idx_logging, qicon_from_svg_file(current_theme.icons["terminal"], size=16))
+        if "folder" in current_theme.icons and os.path.exists(current_theme.icons["folder"]):
+            self.tabs.setTabIcon(self.idx_transfer, qicon_from_svg_file(current_theme.icons["folder"], size=16))
+        """
+
+    # ---- tab bar icons ----
     def setup_tab_icons(self):
         corner_widget = QWidget()
         corner_layout = QHBoxLayout(corner_widget)
@@ -839,57 +1001,52 @@ class VitaDeckModern(QWidget):
         corner_layout.setSpacing(4)
 
         icon_tabs = [
-            ("Workspace", self.tab_workspace, SAVE_SVG),
-            ("Settings", self.tab_settings, SETTINGS_SVG),
-            ("Help", self.tab_help, INFO_SVG),
+            ("Workspace", self.tab_workspace, "workspace", SAVE_SVG),
+            ("Settings", self.tab_settings, "settings", SETTINGS_SVG),
+            ("Help", self.tab_help, "help", INFO_SVG),
         ]
 
         self.icon_buttons = []
 
-        for name, widget, svg in icon_tabs:
+        for name, widget, icon_key, fallback_svg in icon_tabs:
             btn = QPushButton()
             btn.setFlat(True)
-            btn.setIcon(svg_to_qicon(svg, size=20))
+            btn.setIcon(self._get_themed_icon(icon_key, fallback_svg, size=20))
             btn.setIconSize(QSize(20, 20))
             btn.setFixedSize(28, 28)
             btn.setToolTip(name)
-            btn.clicked.connect(lambda checked=False, w=widget: self.tabs.setCurrentWidget(w))
+            btn.clicked.connect(
+                lambda checked=False, w=widget: self.tabs.setCurrentWidget(w)
+            )
             corner_layout.addWidget(btn)
             self.icon_buttons.append(btn)
 
         corner_layout.addStretch()
         self.tabs.setCornerWidget(corner_widget, Qt.TopRightCorner)
 
-    # ------------------------------
-    # Workspace settings / style
-    # ------------------------------
+    # ---- workspace + theme ----
     @Slot()
     def apply_workspace_settings(self, initial=False):
         vita_ip = settings.get("vita_ip", "192.168.1.100")
-        exec_path = settings.get(
-            "exec_path", os.path.join(os.getcwd(), "eboot.bin")
-        )
+        exec_path = settings.get("exec_path", os.path.join(os.getcwd(), "eboot.bin"))
         target_app_id = settings.get("target_app_id", "PCSG00000")
         launch_title_id = settings.get("launch_title_id", "VHBB00001")
 
-        # Update sidebar fields
         self.ip_entry.setText(vita_ip)
         self.exec_entry.setText(exec_path)
         self.appid_entry.setText(target_app_id)
         self.launch_id_entry.setText(launch_title_id)
 
-        # Settings tab values
         self.tab_settings.set_settings_values()
-
-        # Apply style
         self.apply_style(initial=initial)
 
-        # Update command worker host and IP status
         self.cmd_thread.set_host(vita_ip)
         self.update_local_ip_status(initial=initial)
 
-        # Refresh workspace list label
         self.tab_workspace.refresh_list()
+
+        theme_name = settings.get("theme_name", "default")
+        self.change_theme(theme_name, from_workspace=True)
 
         if not initial:
             QMessageBox.information(
@@ -898,9 +1055,16 @@ class VitaDeckModern(QWidget):
                 f"Settings for workspace '{settings.get_current_workspace_name()}' applied.",
             )
 
-    # ------------------------------
-    # Launch-after-upload sync
-    # ------------------------------
+    @Slot(str)
+    def change_theme(self, theme_name: str, from_workspace: bool = False):
+        load_theme(theme_name)
+        self.apply_style(initial=False)
+        self.setup_tab_icons()
+        if hasattr(self, "btn_refresh_ip"):
+            self.btn_refresh_ip.setIcon(self._get_refresh_icon())
+        self._apply_tab_icons_from_theme()
+
+    # ---- launch-after-upload ----
     @Slot(str)
     def check_launch_queue(self, status_msg):
         if self._pending_app_launch and (
@@ -916,9 +1080,7 @@ class VitaDeckModern(QWidget):
                 )
             self._pending_app_launch = None
 
-    # ------------------------------
-    # Style & Settings
-    # ------------------------------
+    # ---- style ----
     @Slot(int)
     def restart_logging_server(self, port):
         if hasattr(self.tab_logging, "restart_server"):
@@ -955,96 +1117,195 @@ class VitaDeckModern(QWidget):
             )
 
     def _get_style_sheet(self, base_font_size, log_font_size):
-        log_font = "Consolas, Monospace"
+        def p(key: str, default: str) -> str:
+            if current_theme and current_theme.palette:
+                return current_theme.palette.get(key, default)
+            return default
+
+        bg = p("background", "#1e1e1e")
+        fg = p("foreground", "#dcdcdc")
+        group_border = p("group_border", "#3c3c3c")
+        group_title = p("group_title", "#aaa")
+        group_bg = p("group_bg", "transparent")
+        sidebar_bg = p("sidebar_bg", "#252525")
+        sidebar_border = p("sidebar_border", "#3c3c3c")
+        input_bg = p("input_bg", "#2d2d2d")
+        input_border = p("input_border", "#444")
+        input_fg = p("input_fg", "#e0e0e0")
+        btn_bg = p("button_bg", "#2f4f6f")
+        btn_border = p("button_border", "#3a5f80")
+        btn_fg = p("button_fg", "#ffffff")
+        btn_bg_hover = p("button_hover_bg", "#3a668a")
+        btn_bg_pressed = p("button_pressed_bg", "#2a5975")
+        btn_disabled_bg = p("button_disabled_bg", "#222")
+        btn_disabled_fg = p("button_disabled_fg", "#555")
+        btn_disabled_border = p("button_disabled_border", "#333")
+        tab_pane_border = p("tab_pane_border", "#3c3c3c")
+        tab_pane_bg = p("tab_pane_bg", "#1e1e1e")
+        tab_bg = p("tab_bg", "#2a2a2a")
+        tab_fg = p("tab_fg", "#dcdcdc")
+        tab_selected_bg = p("tab_selected_bg", "#2f4f6f")
+        tab_selected_border = p("tab_selected_border", "#3a5f80")
+        tab_selected_fg = p("tab_selected_fg", "#ffffff")
+        tab_hover_bg = p("tab_hover_bg", "#3a3a3a")
+        log_bg = p("log_bg", "#111")
+        log_border = p("log_border", "#333")
+        log_text = p("log_text", "#c0c0c0")
+        log_font = p("log_font_family", "Consolas, Monospace")
+
         return f"""
-            QWidget {{
-                background-color: #1e1e1e;
-                color: #dcdcdc;
-                font-family: 'Segoe UI', sans-serif;
-                font-size: {base_font_size}pt;
-            }}
-            QGroupBox {{
-                border: 1px solid #3c3c3c;
-                border-radius: 6px;
-                margin-top: 20px;
-                font-weight: bold;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 3px 0 3px;
-                color: #aaa;
-            }}
-            #sidebar {{
-                background-color: #252525;
-                border: 1px solid #3c3c3c;
-                border-radius: 8px;
-                padding: 12px;
-            }}
-            QLineEdit, QTextEdit, QSpinBox, QListWidget {{
-                padding: 6px;
-                border-radius: 5px;
-                background-color: #2d2d2d;
-                border: 1px solid #444;
-                color: #e0e0e0;
-            }}
-            QPushButton {{
-                background-color: #2f4f6f;
-                border: 1px solid #3a5f80;
-                padding: 8px 10px;
-                border-radius: 4px;
-                color: white;
-            }}
-            QPushButton:hover {{
-                background-color: #3a668a;
-            }}
-            QPushButton:pressed {{
-                background-color: #2a5975;
-            }}
-            QPushButton:disabled {{
-                background-color: #222;
-                color: #555;
-                border: 1px solid #333;
-            }}
-            /* Tab pane */
-            QTabWidget::pane {{
-                border: 1px solid #3c3c3c;
-                border-top-left-radius: 8px;
-                border-top-right-radius: 8px;
-                background: #1e1e1e;
-            }}
-            QTabBar::tab {{
-                padding: 8px 18px;
-                background: #2a2a2a;
-                color: #dcdcdc;
-                border: 1px solid #3c3c3c;
-                border-bottom: none;
-                border-radius: 6px 6px 0 0;
-                margin-right: 2px;
-            }}
-            QTabBar::tab:selected {{
-                background: #2f4f6f;
-                border-color: #3a5f80;
-                border-bottom: none;
-                color: white;
-            }}
-            QTabBar::tab:hover {{
-                background: #3a3a3a;
-            }}
-            QTextEdit#logOutput, QPlainTextEdit#logOutput {{
-                background-color: #111;
-                border: 1px solid #333;
-                border-radius: 8px;
-                padding: 8px;
-                color: #c0c0c0;
-                font-family: {log_font};
-                font-size: {log_font_size}pt;
-            }}
+QWidget {{
+    background-color: {bg};
+    color: {fg};
+    font-family: 'Segoe UI', sans-serif;
+    font-size: {base_font_size}pt;
+    border-radius: 10px;
+}}
+
+QGroupBox {{
+    border: 1px solid {group_border};
+    border-radius: 10px;
+    margin-top: 20px;
+    font-weight: bold;
+    background-color: {group_bg};
+}}
+
+QGroupBox::title {{
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 6px;
+    color: {group_title};
+}}
+
+#sidebar {{
+    background-color: {sidebar_bg};
+    border: 1px solid {sidebar_border};
+    border-radius: 12px;
+    padding: 12px;
+}}
+
+QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QListWidget, QComboBox {{
+    padding: 6px 8px;
+    border-radius: 8px;
+    background-color: {input_bg};
+    border: 1px solid {input_border};
+    color: {input_fg};
+}}
+
+QListWidget::item {{
+    border-radius: 6px;
+    padding: 4px;
+}}
+
+QListWidget::item:selected {{
+    background: {tab_selected_bg};
+    border-radius: 6px;
+}}
+
+QPushButton {{
+    background-color: {btn_bg};
+    border: 1px solid {btn_border};
+    padding: 8px 12px;
+    border-radius: 10px;
+    color: {btn_fg};
+}}
+
+QPushButton:hover {{
+    background-color: {btn_bg_hover};
+}}
+
+QPushButton:pressed {{
+    background-color: {btn_bg_pressed};
+}}
+
+QPushButton:disabled {{
+    background-color: {btn_disabled_bg};
+    color: {btn_disabled_fg};
+    border: 1px solid {btn_disabled_border};
+}}
+
+QTabWidget::pane {{
+    border: 1px solid {tab_pane_border};
+    border-radius: 12px;
+    background: {tab_pane_bg};
+}}
+
+QTabBar::tab {{
+    padding: 8px 18px;
+    background: {tab_bg};
+    color: {tab_fg};
+    border: 1px solid {tab_pane_border};
+    border-bottom: none;
+    border-radius: 10px 10px 0 0;
+    margin-right: 4px;
+}}
+
+QTabBar::tab:selected {{
+    background: {tab_selected_bg};
+    border-color: {tab_selected_border};
+    color: {tab_selected_fg};
+}}
+
+QTabBar::tab:hover {{
+    background: {tab_hover_bg};
+}}
+
+QScrollArea {{
+    border-radius: 12px;
+    border: 1px solid {sidebar_border};
+}}
+
+QScrollBar:vertical, QScrollBar:horizontal {{
+    background: transparent;
+    border-radius: 6px;
+    margin: 2px;
+}}
+
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{
+    background: {btn_bg_hover};
+    border-radius: 6px;
+}}
+
+QMenu {{
+    background: {group_bg};
+    border-radius: 10px;
+    padding: 5px;
+}}
+
+QMenu::item {{
+    padding: 6px 10px;
+    border-radius: 6px;
+}}
+
+QMenu::item:selected {{
+    background: {tab_selected_bg};
+    color: {tab_selected_fg};
+}}
+
+QTextEdit#logOutput, QPlainTextEdit#logOutput {{
+    background-color: {log_bg};
+    border: 1px solid {log_border};
+    border-radius: 12px;
+    padding: 10px;
+    color: {log_text};
+    font-family: {log_font};
+    font-size: {log_font_size}pt;
+}}
+
         """
+
+
+
 
     # ------------------------------
     # Sidebar
     # ------------------------------
+    def theme_color(self, key: str, default: str) -> str:
+        """Helper to get a color from the current theme palette, with a fallback."""
+        if current_theme and current_theme.palette:
+            return current_theme.palette.get(key, default)
+        return default
+
     def setup_ip_group(self, layout):
         grp_ip = QGroupBox("PS Vita IP")
         ip_layout = QVBoxLayout(grp_ip)
@@ -1124,8 +1385,11 @@ class VitaDeckModern(QWidget):
         run_exec_layout.addWidget(self.appid_entry)
 
         self.btn_upload_launch = QPushButton("Upload and Launch")
+        # Button color from theme (fallback to original)
+        primary_bg = self.theme_color("button_primary_bg", "#2f4f6f")
+        primary_fg = self.theme_color("button_primary_fg", "#ffffff")
         self.btn_upload_launch.setStyleSheet(
-            "background-color: #2f4f6f; color: white;"
+            f"background-color: {primary_bg}; color: {primary_fg};"
         )
         self.btn_upload_launch.clicked.connect(self.upload_and_launch)
         run_exec_layout.addWidget(self.btn_upload_launch)
@@ -1227,8 +1491,8 @@ class VitaDeckModern(QWidget):
             "upload", local_path, remote_path, True
         )
 
-        # Switch to Logging tab (index 1)
-        self.tabs.setCurrentIndex(1)
+        # Switch to Logging tab (use stored index instead of hard-coded 1)
+        self.tabs.setCurrentIndex(self.idx_logging)
 
     def launch_title_id(self):
         title_id = self.launch_id_entry.text().strip()
@@ -1251,32 +1515,25 @@ class VitaDeckModern(QWidget):
                 return
 
         self.cmd_thread.add_command(command)
-        # Switch to Logging tab
-        self.tabs.setCurrentIndex(1)
+        # Switch to Logging tab (again, index of logging)
+        self.tabs.setCurrentIndex(self.idx_logging)
 
     # ------------------------------
     # Status bar / local IP
     # ------------------------------
     def setup_local_ip_status(self, layout):
-        self.local_ip_dot = ColorDot("#777", size=12)
+        inactive = self.theme_color("status_inactive", "#777")
+
+        self.local_ip_dot = ColorDot(inactive, size=12)
         layout.addWidget(self.local_ip_dot)
 
         self.local_ip_label = QLabel("Local IP: N/A")
-        self.local_ip_label.setStyleSheet("color: #777;")
+        self.local_ip_label.setStyleSheet(f"color: {inactive};")
         layout.addWidget(self.local_ip_label)
 
-        svg_data = QByteArray.fromBase64(
-            self.REFRESH_SVG_B64.encode("utf-8")
-        )
-        renderer = QSvgRenderer(svg_data)
-        pixmap = QPixmap(QSize(20, 20))
-        pixmap.fill(Qt.transparent)
-        painter = QPainter(pixmap)
-        renderer.render(painter)
-        painter.end()
-
         self.btn_refresh_ip = QPushButton()
-        self.btn_refresh_ip.setIcon(QIcon(pixmap))
+        # Use themed refresh icon (falls back to embedded SVG)
+        self.btn_refresh_ip.setIcon(self._get_refresh_icon())
         self.btn_refresh_ip.setIconSize(QSize(16, 16))
         self.btn_refresh_ip.setFixedSize(QSize(28, 28))
         self.btn_refresh_ip.setToolTip("Refresh Local IP & Network Status")
@@ -1290,23 +1547,27 @@ class VitaDeckModern(QWidget):
         local_ip = self._local_ip_cache
         vita_ip = settings.get("vita_ip", "")
 
+        inactive = self.theme_color("status_inactive", "#777")
+        ok_color = self.theme_color("status_ok", "#3ecf4c")
+        err_color = self.theme_color("status_error", "red")
+
         local_is_valid = (
             self.IPV4_PATTERN.match(local_ip)
             and local_ip not in ("0.0.0.0", "127.0.0.1")
         )
         vita_is_valid = self.IPV4_PATTERN.match(vita_ip)
 
-        color = "#777"
+        color = inactive
         display_text = "Local IP: N/A"
 
         if local_is_valid and vita_is_valid:
             local_subnet = local_ip.rsplit(".", 1)[0]
             vita_subnet = vita_ip.rsplit(".", 1)[0]
             if local_subnet == vita_subnet:
-                color = "#3ecf4c"
-                status = "Same Network"
+                color = ok_color
+                status = "OK"
             else:
-                color = "red"
+                color = err_color
                 status = "Different Network"
             display_text = f"Local IP: {local_ip} ({status})"
         else:
@@ -1321,10 +1582,12 @@ class VitaDeckModern(QWidget):
 
     @Slot(bool, bool)
     def update_local_ip_status(self, initial=False, force_refresh=False):
+        warn_color = self.theme_color("status_warning", "orange")
+
         if force_refresh:
-            self.local_ip_dot.set_color("orange")
+            self.local_ip_dot.set_color(warn_color)
             self.local_ip_label.setText("Local IP: Getting current IP...")
-            self.local_ip_label.setStyleSheet("color: orange;")
+            self.local_ip_label.setStyleSheet(f"color: {warn_color};")
             QApplication.processEvents()
             QTimer.singleShot(500, self._apply_final_ip_status)
         else:
@@ -1334,18 +1597,20 @@ class VitaDeckModern(QWidget):
         status_bar_layout = QHBoxLayout()
         status_bar_layout.setContentsMargins(12, 4, 12, 4)
 
-        self.conn_dot = ColorDot("#777", size=12)
+        inactive = self.theme_color("status_inactive", "#777")
+
+        self.conn_dot = ColorDot(inactive, size=12)
         status_bar_layout.addWidget(self.conn_dot)
         self.conn_label = QLabel("Not connected")
-        self.conn_label.setStyleSheet("color: #777;")
+        self.conn_label.setStyleSheet(f"color: {inactive};")
         status_bar_layout.addWidget(self.conn_label)
 
         status_bar_layout.addSpacing(20)
 
-        self.transfer_dot = ColorDot("#777", size=12)
+        self.transfer_dot = ColorDot(inactive, size=12)
         status_bar_layout.addWidget(self.transfer_dot)
         self.transfer_label = QLabel("Not transfer file in progress")
-        self.transfer_label.setStyleSheet("color: #777;")
+        self.transfer_label.setStyleSheet(f"color: {inactive};")
         status_bar_layout.addWidget(self.transfer_label)
 
         status_bar_layout.addStretch()
@@ -1355,28 +1620,34 @@ class VitaDeckModern(QWidget):
 
     @Slot(str, str)
     def update_connection_status(self, message, color):
+        # color string comes from FTP thread; we use it directly
         self.conn_label.setStyleSheet(f"color: {color};")
         self.conn_label.setText(message)
         self.conn_dot.set_color(color)
 
     @Slot(str)
     def update_transfer_status(self, status_msg):
-        color = "#777"
+        inactive = self.theme_color("status_inactive", "#777")
+        ok_color = self.theme_color("status_ok", "#3ecf4c")
+        err_color = self.theme_color("status_error", "red")
+        warn_color = self.theme_color("status_warning", "orange")
+
+        color = inactive
         text = status_msg
 
         if status_msg.lower() == "idle":
             text = "File transfer idle"
-            color = "#3ecf4c"
+            color = ok_color
         elif "error" in status_msg.lower():
             text = f"Transfer Error: {status_msg}"
-            color = "red"
+            color = err_color
         elif status_msg.startswith(
             ("Uploading", "Downloading", "Renaming", "Deleting")
         ):
-            color = "orange"
+            color = warn_color
         else:
             text = "Not transfer file in progress"
-            color = "#777"
+            color = inactive
 
         self.transfer_label.setText(text)
         self.transfer_dot.set_color(color)
@@ -1400,12 +1671,19 @@ class VitaDeckModern(QWidget):
         event.accept()
 
 
+
 # ==========================================
-# 7. MAIN ENTRY POINT
+# ENTRY POINT
 # ==========================================
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+
+    # Load saved or default theme BEFORE creating the window
+    theme_name = settings.get("theme_name", "default")
+    load_theme(theme_name)
+
     window = VitaDeckModern()
     window.show()
+
     sys.exit(app.exec())

@@ -1,0 +1,6 @@
+status_ok = #3ecf4c
+status_error = #ff3333
+status_warning = orange
+status_inactive = #777777
+button_primary_bg = #2f4f6f
+button_primary_fg = #ffffff
