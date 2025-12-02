@@ -2,14 +2,17 @@ import sys
 import os
 import socket
 import threading
+import ipaddress
+import re
 from PySide6.QtWidgets import (
     QApplication, QWidget, QHBoxLayout, QVBoxLayout, 
     QPushButton, QLabel, QLineEdit, QTabWidget, 
     QGroupBox, QMessageBox, QFrame, QFileDialog, QStyle,
     QTextEdit, QSpinBox, QSplitter 
 )
-from PySide6.QtGui import QColor, QPainter, QFont, QIntValidator
-from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer 
+from PySide6.QtGui import QColor, QPainter, QFont, QIntValidator, QIcon, QPixmap
+from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer, QSize, QByteArray, QBuffer, QIODevice 
+from PySide6.QtSvg import QSvgRenderer
 
 # Import Modules (Mocked for standalone execution if missing)
 try:
@@ -344,6 +347,44 @@ class CommandWorker(QThread):
 # MAIN WINDOW (VitaDeckModern)
 # ==========================================
 class VitaDeckModern(QWidget):
+    # Base64 encoded SVG for the NEW refresh button icon (Fill set to #DCDCDC for gray)
+    REFRESH_SVG_B64 = """
+        PD94bWwgdmVyc2lvbj0iMS4wIiA/Pgo8c3ZnIGZpbGw9IiNEQ0RDREMiIHdpZHRoPSI4MDBweCIgaGVpZ2h0PSI4MDBweCIgdmlld0JveD0iMCAwIDk2IDk2IiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPgo8dGl0bGUvPgo8Zz4KPHBhdGggZD0iTTk0LjI0MjIsMzcuNzU3OGE1Ljk5NzksNS45OTc5LDAsMCwwLTguNDg0NCwwbC0yLjYxLDIuNjFBMzYuMDM0NywzNi4wMzQ3LDAsMCwwLDQ4LDEyYTM1LjU1LDM1LjU1LDAsMCwwLTIxLjYyMTEsNy4zNTk0LDUuOTk3Nyw1Ljk5NzcsMCwwLDAsNy4yNDIyLDkuNTYyNUEyMy42Njc3LDIzLjY2NzcsMCwwLDEsNDgsMjQsMjMuOTU3LDIzLjA0MjksMCwwLDEsNzAuNjcyOSw0MC40NzY2bC0zLjk3LTMuMTY0MWE1Ljk5NTYsNS45OTU2LDAsMSwwLTcuNDc2NSw5LjM3NWwxNS4wMzUxLDEyYTUuOTksNS45OSwwLDAsMCw3Ljk4LC0wLjQ0NTNsMTItMTJBNS45OTc5LDUuOTk3OSwwLDAsMCw5NC4yNDIyLDM3Ljc1NzhaIi8+CjxwYXRoIGQ9Ik02Mi4zNzg5LDY3LjA3ODFBMjMuNjY3NSwyMy42Njc1LDAsMCwxLDQ4LDcyLDIzLjk1NywyMy4wNDI5LDAsMCwxLDI1LjMyNzEsNTUuNTIzNGwzLjk3LDMuMTY0MWE1Ljk5NTYsNS45OTU2LDAsMSwwLDcuNDc2NS05LjM3NWwtMTUuMDM1MS0xMmE2LjAwNzEsNi4wMDcxLDAsMCwwLTcuOTgsMC40NDUzbC0xMiwxMmE1Ljk5OTQsNS45OTk0LDAsMCwwLDguNDg0NCw4LjQ4NDRsMi42MS0yLjYxQTM2LjAzNDcsMzYuMDM0NywwLDAsMCw0OCw4NGEzNS41NSwzNS41NSwwLDAsMCwyMS42MjExLTcuMzU5NCw1Ljk5NzcsNS45OTc3LDAsMSwwLTcuMjQyMi05LjU2MjVaIi8+CjwvZz4KPC9zdmc+
+    """
+    
+    # Simple check for a valid IPv4 address
+    IPV4_PATTERN = re.compile(r'^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$')
+    
+    @staticmethod
+    def get_local_ip():
+        """
+        Attempts to find the local machine's IP address, with fallbacks for different 
+        environments, including Linux.
+        """
+        local_ip = "127.0.0.1"
+        
+        # 1. Primary Method (Most reliable cross-platform, finding the outbound interface IP)
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80)) # Connect to an external host to find the source IP
+            local_ip = s.getsockname()[0]
+            s.close()
+            if local_ip not in ("0.0.0.0", "127.0.0.1"):
+                return local_ip
+        except Exception:
+            pass
+            
+        # 2. Secondary Fallback (Tries to resolve hostname - often works better on Linux/macOS)
+        try:
+            local_ip = socket.gethostbyname(socket.gethostname())
+            if local_ip not in ("0.0.0.0", "127.0.0.1"):
+                return local_ip
+        except Exception:
+            pass
+
+        # 3. Final Fallback
+        return local_ip # Will be "127.0.0.1" if all else fails
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Vitadeck - Manager & Debugger")
@@ -351,6 +392,7 @@ class VitaDeckModern(QWidget):
         
         # FIX: Init pending launch flag
         self._pending_app_launch = None
+        self._local_ip_cache = self.get_local_ip()
 
         self.cmd_thread = CommandWorker()
         self.cmd_thread.start()
@@ -403,6 +445,9 @@ class VitaDeckModern(QWidget):
         self.apply_style(initial=True)
         
         self.cmd_thread.set_host(settings.get("vita_ip", "192.168.1.100"))
+        
+        # Initial call to set the local IP status
+        self.update_local_ip_status(initial=True)
 
     # ==========================================
     # FIX: Launch-after-upload synchronization
@@ -435,6 +480,22 @@ class VitaDeckModern(QWidget):
         base_font_size = 10 
 
         self.setStyleSheet(self._get_style_sheet(base_font_size, log_font_size))
+        
+        # Manually apply style to the refresh button icon (now uses general style + fixed size)
+        if hasattr(self, 'btn_refresh_ip'):
+             # Re-apply custom style for the IP button to ensure correct aesthetics
+             self.btn_refresh_ip.setStyleSheet("""
+                QPushButton {
+                    background-color: #2d2d2d; 
+                    border: 1px solid #444; 
+                    border-radius: 4px;
+                    padding: 2px;
+                }
+                QPushButton:hover {
+                    background-color: #3a3a3a;
+                    border: 1px solid #555;
+                }
+            """)
         
         if not initial:
             QMessageBox.information(self, "Style Applied", f"Application style applied. Log output font size: {log_font_size}pt.")
@@ -553,8 +614,10 @@ class VitaDeckModern(QWidget):
         ip_layout = QVBoxLayout(grp_ip)
         
         self.ip_entry = QLineEdit(settings.get("vita_ip", "192.168.1.100"))
+        # CONNECT: Update local IP status when Vita IP changes
         self.ip_entry.textChanged.connect(lambda t: settings.set("vita_ip", t))
         self.ip_entry.textChanged.connect(self.update_command_worker_host)
+        self.ip_entry.textChanged.connect(lambda: self.update_local_ip_status(initial=False)) 
         ip_layout.addWidget(self.ip_entry)
         
         btn_reconnect = QPushButton("Reconnect FTP")
@@ -725,10 +788,117 @@ class VitaDeckModern(QWidget):
     # ==========================================
     # STATUS BAR
     # ==========================================
+    def setup_local_ip_status(self, layout):
+        """Sets up the local IP display, dot, and refresh button."""
+        
+        self.local_ip_dot = ColorDot("#777", size=12)
+        layout.addWidget(self.local_ip_dot)
+        
+        self.local_ip_label = QLabel("Local IP: N/A")
+        self.local_ip_label.setStyleSheet("color: #777;")
+        layout.addWidget(self.local_ip_label)
+        
+        # Load SVG icon
+        svg_data = QByteArray.fromBase64(self.REFRESH_SVG_B64.encode('utf-8'))
+        renderer = QSvgRenderer(svg_data)
+        
+        # We need a slightly larger pixmap for the new icon size
+        pixmap = QPixmap(QSize(20, 20)) 
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        renderer.render(painter)
+        painter.end()
+        
+        self.btn_refresh_ip = QPushButton()
+        self.btn_refresh_ip.setIcon(QIcon(pixmap))
+        self.btn_refresh_ip.setIconSize(QSize(16, 16)) # Display icon slightly smaller than button
+        self.btn_refresh_ip.setFixedSize(QSize(28, 28)) # Proper square button size
+        
+        # Apply style for proper squared/rounded look
+        self.btn_refresh_ip.setStyleSheet("""
+            QPushButton {
+                background-color: #2d2d2d; 
+                border: 1px solid #444; 
+                border-radius: 4px;
+                padding: 2px;
+            }
+            QPushButton:hover {
+                background-color: #3a3a3a;
+                border: 1px solid #555;
+            }
+        """) 
+        self.btn_refresh_ip.setToolTip("Refresh Local IP & Network Status")
+        # Ensure the command is rerun on click
+        self.btn_refresh_ip.clicked.connect(lambda: self.update_local_ip_status(initial=False, force_refresh=True))
+        
+        layout.addWidget(self.btn_refresh_ip)
+        
+    def _apply_final_ip_status(self):
+        """Performs the synchronous IP lookup and applies the final status based on the result."""
+        
+        # 1. Synchronous Network Call (This is what makes the UI freeze briefly if not on a timer)
+        self._local_ip_cache = self.get_local_ip()
+
+        local_ip = self._local_ip_cache
+        vita_ip = settings.get("vita_ip", "")
+        
+        # Check if IPs are valid IPv4
+        local_is_valid = self.IPV4_PATTERN.match(local_ip) and local_ip not in ("0.0.0.0", "127.0.0.1")
+        vita_is_valid = self.IPV4_PATTERN.match(vita_ip)
+        
+        if local_is_valid and vita_is_valid:
+            # Simple check for same subnet (comparing the first three octets - typical for /24)
+            local_subnet = local_ip.rsplit('.', 1)[0]
+            vita_subnet = vita_ip.rsplit('.', 1)[0]
+            
+            if local_subnet == vita_subnet:
+                color = "#3ecf4c" # Green: Same Network
+                status = "Same Network"
+            else:
+                color = "red" # Red: Different Network
+                status = "Different Network"
+                
+            display_text = f"Local IP: {local_ip} ({status})"
+            
+        else:
+            color = "#777" # Gray: Default/Unknown
+            if not local_is_valid:
+                 display_text = "Local IP: N/A (Error/Localhost)"
+            elif not vita_is_valid:
+                 display_text = f"Local IP: {local_ip} (Vita IP Invalid)"
+            else:
+                 display_text = "Local IP: N/A"
+
+        # 2. Final UI Update
+        self.local_ip_dot.set_color(color)
+        self.local_ip_label.setText(display_text)
+        self.local_ip_label.setStyleSheet(f"color: {color};")
+        
+    @Slot(bool, bool)
+    def update_local_ip_status(self, initial=False, force_refresh=False):
+        """Checks and updates the local IP and network compatibility status."""
+        
+        if force_refresh:
+            # 1. Immediate UI update (Orange transition for 500ms delay)
+            self.local_ip_dot.set_color("orange")
+            # Text update changed to "Getting current IP..."
+            self.local_ip_label.setText("Local IP: Getting current IP...")
+            self.local_ip_label.setStyleSheet("color: orange;")
+            QApplication.processEvents() # Force UI update *before* the delay/network call
+            
+            # 2. Use a timer to perform the actual check after 500ms visual delay
+            QTimer.singleShot(500, self._apply_final_ip_status)
+
+        else:
+            # For initial start up or IP change, run the check immediately
+            self._apply_final_ip_status()
+
+
     def setup_status_bar(self, layout):
         status_bar_layout = QHBoxLayout()
         status_bar_layout.setContentsMargins(12, 4, 12, 4)
         
+        # Connection Status (Existing)
         self.conn_dot = ColorDot("#777", size=12) 
         status_bar_layout.addWidget(self.conn_dot)
         self.conn_label = QLabel("Not connected")
@@ -737,6 +907,7 @@ class VitaDeckModern(QWidget):
         
         status_bar_layout.addSpacing(20)
         
+        # File Transfer Status (Existing)
         self.transfer_dot = ColorDot("#777", size=12)
         status_bar_layout.addWidget(self.transfer_dot)
         self.transfer_label = QLabel("Not transfer file in progress")
@@ -744,6 +915,9 @@ class VitaDeckModern(QWidget):
         status_bar_layout.addWidget(self.transfer_label)
         
         status_bar_layout.addStretch()
+        
+        # Local IP Status (New - Aligned right by stretch)
+        self.setup_local_ip_status(status_bar_layout)
         
         layout.addLayout(status_bar_layout)
 
