@@ -145,18 +145,18 @@ class BuildTab(QWidget):
 
         layout.addLayout(header_layout) # ADDED BACK TO LAYOUT
 
-        # Output Text Area
+        # old  Output Text Area
+        
+        #self.build_output = QPlainTextEdit()
+        #self.build_output.setReadOnly(True)
+        #self.build_output.setStyleSheet(f""" QPlainTextEdit {{                background-color: {COLOR_BACKGROUND}; 
+        #        color: {COLOR_GREY}; font-family: Consolas, 'Courier New', Monospace;
+        #        border: 1px solid #444; font-size: 10pt; }} """)
+        # New Output Text Area
         self.build_output = QPlainTextEdit()
+        self.build_output.setObjectName("logOutput")
         self.build_output.setReadOnly(True)
-        self.build_output.setStyleSheet(f"""
-            QPlainTextEdit {{
-                background-color: {COLOR_BACKGROUND}; 
-                color: {COLOR_GREY}; 
-                font-family: Consolas, 'Courier New', Monospace;
-                border: 1px solid #444;
-                font-size: 10pt;
-            }}
-        """)
+
         layout.addWidget(self.build_output)
 
     def open_build_folder(self):

@@ -996,6 +996,8 @@ class VitaDeckModern(QWidget):
     # ---- tab bar icons ----
     def setup_tab_icons(self):
         corner_widget = QWidget()
+
+        # Normal margins; we'll instead create vertical space by moving the pane down.
         corner_layout = QHBoxLayout(corner_widget)
         corner_layout.setContentsMargins(0, 0, 0, 0)
         corner_layout.setSpacing(4)
@@ -1023,6 +1025,7 @@ class VitaDeckModern(QWidget):
 
         corner_layout.addStretch()
         self.tabs.setCornerWidget(corner_widget, Qt.TopRightCorner)
+
 
     # ---- workspace + theme ----
     @Slot()
@@ -1228,6 +1231,7 @@ QTabWidget::pane {{
     border: 1px solid {tab_pane_border};
     border-radius: 12px;
     background: {tab_pane_bg};
+    top: 6px;              /* move pane down so all tab buttons sit higher */
 }}
 
 QTabBar::tab {{
@@ -1291,7 +1295,6 @@ QTextEdit#logOutput, QPlainTextEdit#logOutput {{
     font-family: {log_font};
     font-size: {log_font_size}pt;
 }}
-
         """
 
 
