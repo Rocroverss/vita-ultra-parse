@@ -15,12 +15,184 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QColor, QPainter, QFont, QIntValidator, QIcon, QPixmap
 from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer, QSize, QByteArray
 from PySide6.QtSvg import QSvgRenderer
-
+from pathlib import Path
 # ==========================================
 # THEME SYSTEM (icons + palette from THEMES/<theme>/theme.txt)
 # ==========================================
 
 THEMES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "THEMES")
+
+# ==========================================
+# SVG CONSTANTS & UTILITY (fallback icons)
+# ==========================================
+
+THEME_DIR = Path("THEMES") / "default"
+
+from pathlib import Path
+
+THEME_DIR = Path("THEMES") / "default"
+
+def load_svg(filename: str, fallback: str) -> str:
+    file_path = THEME_DIR / filename
+    try:
+        if file_path.exists():
+            return file_path.read_text(encoding="utf-8")
+    except Exception as e:
+        print(f"SVG load error for {filename}: {e}")
+
+    return fallback
+
+SETTINGS_SVG_FALLBACK = """<svg>...</svg>"""
+INFO_SVG_FALLBACK = """<svg>...</svg>"""
+SAVE_SVG_FALLBACK = """<svg>...</svg>"""
+
+
+SETTINGS_SVG = load_svg("settings.svg", SETTINGS_SVG_FALLBACK)
+INFO_SVG     = load_svg("info.svg", INFO_SVG_FALLBACK)
+SAVE_SVG     = load_svg("save.svg", SAVE_SVG_FALLBACK)
+
+
+BATTERY_SVGS_FALLBACK = {
+    "alt-battery-1.svg": """<svg>...</svg>""",
+    "alt-battery-2.svg": """<svg>...</svg>""",
+    "alt-battery-3.svg": """<svg>...</svg>""",
+    "alt-battery-4.svg": """<svg>...</svg>""",
+    "alt-battery-5.svg": """<svg>...</svg>""",
+    "alt-charge-battery.svg": """<svg>...</svg>""",
+}
+
+BATTERY_SVGS = {
+    name: load_svg(name, fallback)
+    for name, fallback in BATTERY_SVGS_FALLBACK.items()
+}
+
+
+def svg_to_qicon(svg_content: str, size: int = 24) -> QIcon:
+    """Converts an SVG string into a QIcon."""
+    renderer = QSvgRenderer(QByteArray(svg_content.encode("utf-8")))
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    renderer.render(painter)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def qicon_from_svg_file(path: str, size: int = 24) -> QIcon:
+    """Converts an SVG file on disk into a QIcon."""
+    if not os.path.exists(path):
+        return QIcon()
+    renderer = QSvgRenderer(path)
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    renderer.render(painter)
+    painter.end()
+    return QIcon(pixmap)
+
+
+class BatteryWidget(QWidget):
+    def __init__(self, theme_path, parent=None):
+        super().__init__(parent)
+        self.theme_path = theme_path
+        
+        # Layout
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self.setLayout(layout)
+
+        # Percentage Label
+        self.lbl_text = QLabel("--%")
+        # Use a generic style, will be overridden by main window CSS if needed, 
+        # but here we ensure it's visible
+        self.lbl_text.setStyleSheet("font-weight: bold; color: #888;")
+        
+        # Icon Label
+        self.lbl_icon = QLabel()
+        self.lbl_icon.setFixedSize(24, 24)
+        self.lbl_icon.setScaledContents(True)
+
+        layout.addWidget(self.lbl_text)
+        layout.addWidget(self.lbl_icon)
+        
+        # Default state
+        self.update_battery(0, is_charging=False, connected=False)
+
+    def update_theme_path(self, new_path):
+        self.theme_path = new_path
+        # Force refresh with last known values if we had storage, 
+        # for now just reset or wait for next update
+
+    def update_battery(self, level: int, is_charging: bool = False, connected: bool = True):
+        """
+        Updates the battery icon and color based on level.
+        """
+        if not connected:
+            self.lbl_text.setText("--%")
+            self.lbl_icon.clear()
+            return
+
+        self.lbl_text.setText(f"{level}%")
+        
+        icon_name = ""
+        color = ""
+
+        # Logic per requirements
+        if is_charging:
+            icon_name = "alt-charge-battery.svg"
+            color = "#00FF00" # Green
+        else:
+            if level < 20:
+                icon_name = "alt-battery-1.svg"
+                color = "#ff3333" # Red
+            elif 20 <= level < 40:
+                icon_name = "alt-battery-2.svg"
+                color = "orange" # Orange
+            elif 40 <= level < 60:
+                icon_name = "alt-battery-3.svg"
+                color = "#3ecf4c" # Green
+            elif 60 <= level < 80:
+                icon_name = "alt-battery-4.svg"
+                color = "#3ecf4c" # Green
+            else: # 80 - 100
+                icon_name = "alt-battery-5.svg"
+                color = "#3ecf4c" # Green
+
+        # Load and Tint Pixmap
+        pixmap = QPixmap()
+        loaded = False
+        
+        # 1. Try to load from file (Theme path -> Default path)
+        full_path = os.path.join(self.theme_path, "icons", icon_name)
+        if not os.path.exists(full_path):
+            default_path = os.path.join(THEMES_DIR, "default", "icons", icon_name)
+            if os.path.exists(default_path):
+                full_path = default_path
+            
+        if os.path.exists(full_path):
+            pixmap.load(full_path)
+            loaded = True
+        
+        # 2. Fallback to embedded SVG if file not found
+        if not loaded and icon_name in BATTERY_SVGS:
+            renderer = QSvgRenderer(QByteArray(BATTERY_SVGS[icon_name].encode("utf-8")))
+            pixmap = QPixmap(24, 24)
+            pixmap.fill(Qt.transparent)
+            painter = QPainter(pixmap)
+            renderer.render(painter)
+            painter.end()
+            loaded = True
+
+        if loaded and not pixmap.isNull():
+            # Apply Color Overlay
+            painter = QPainter(pixmap)
+            painter.setCompositionMode(QPainter.CompositionMode_SourceIn)
+            painter.fillRect(pixmap.rect(), QColor(color))
+            painter.end()
+            self.lbl_icon.setPixmap(pixmap)
+        else:
+            print(f"Battery Icon missing: {icon_name}")
 
 
 class Theme:
@@ -71,7 +243,6 @@ class Theme:
             "save": icon_path("alt-save-floppy.svg"),
             "search": icon_path("alt-search.svg"),
             "trash": icon_path("alt-trash.svg"),
-            # battery icons etc. are available if needed
         }
 
 
@@ -92,63 +263,6 @@ def load_theme(theme_name: str = "default") -> Theme:
     theme.load()
     current_theme = theme
     return theme
-
-
-# ==========================================
-# SVG CONSTANTS & UTILITY (fallback icons)
-# ==========================================
-
-SETTINGS_SVG = """<?xml version="1.0" encoding="utf-8"?>
-<svg width="800px" height="800px" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-<g id="Interface / Settings">
-<g id="Vector">
-<path d="M20.3499 8.92293L19.9837 8.7192C19.9269 8.68756 19.8989 8.67169 19.8714 8.65524C19.5983 8.49165 19.3682 8.26564 19.2002 7.99523C19.1833 7.96802 19.1674 7.93949 19.1348 7.8831C19.1023 7.82677 19.0858 7.79823 19.0706 7.76998C18.92 7.48866 18.8385 7.17515 18.8336 6.85606C18.8331 6.82398 18.8332 6.79121 18.8343 6.72604L18.8415 6.30078C18.8529 5.62025 18.8587 5.27894 18.763 4.97262C18.6781 4.70053 18.536 4.44993 18.3462 4.23725C18.1317 3.99685 17.8347 3.82534 17.2402 3.48276L16.7464 3.1982C16.1536 2.85658 15.8571 2.68571 15.5423 2.62057C15.2639 2.56294 14.9765 2.56561 14.6991 2.62789C14.3859 2.69819 14.0931 2.87351 13.5079 3.22396L13.5045 3.22555L13.1507 3.43741C13.0948 3.47091 13.0665 3.48779 13.0384 3.50338C12.7601 3.6581 12.4495 3.74365 12.1312 3.75387C12.0992 3.7549 12.0665 3.7549 12.0013 3.7549C11.9365 3.7549 11.9024 3.7549 11.8704 3.75387C11.5515 3.74361 11.2402 3.65759 10.9615 3.50224C10.9334 3.48658 10.9056 3.46956 10.8496 3.4359L10.4935 3.22213C9.90422 2.86836 9.60915 2.69121 9.29427 2.62057C9.0157 2.55807 8.72737 2.55634 8.44791 2.61471C8.13236 2.68062 7.83577 2.85276 7.24258 3.19703L7.23994 3.1982L6.75228 3.48124L6.74688 3.48454C6.15904 3.82572 5.86441 3.99672 5.6517 4.23614C5.46294 4.4486 5.32185 4.69881 5.2374 4.97018C5.14194 5.27691 5.14703 5.61896 5.15853 6.3027L5.16568 6.72736C5.16676 6.79166 5.16864 6.82362 5.16817 6.85525C5.16343 7.17499 5.08086 7.48914 4.92974 7.77096C4.9148 7.79883 4.8987 7.8267 4.86654 7.88237C4.83436 7.93809 4.81877 7.96579 4.80209 7.99268C4.63336 8.26452 4.40214 8.49186 4.12733 8.65572C4.10015 8.67193 4.0715 8.68752 4.01521 8.71871L3.65365 8.91908C3.05208 9.25245 2.75137 9.41928 2.53256 9.65669C2.33898 9.86672 2.19275 10.1158 2.10349 10.3872C2.00259 10.6939 2.00267 11.0378 2.00424 11.7255L2.00551 12.2877C2.00706 12.9708 2.00919 13.3122 2.11032 13.6168C2.19979 13.8863 2.34495 14.134 2.53744 14.3427C2.75502 14.5787 3.05274 14.7445 3.64974 15.0766L4.00808 15.276C4.06907 15.3099 4.09976 15.3266 4.12917 15.3444C4.40148 15.5083 4.63089 15.735 4.79818 16.0053C4.81625 16.0345 4.8336 16.0648 4.8683 16.1255C4.90256 16.1853 4.92009 16.2152 4.93594 16.2452C5.08261 16.5229 5.16114 16.8315 5.16649 17.1455C5.16707 17.1794 5.16658 17.2137 5.16541 17.2827L5.15853 17.6902C5.14695 18.3763 5.1419 18.7197 5.23792 19.0273C5.32287 19.2994 5.46484 19.55 5.65463 19.7627C5.86915 20.0031 6.16655 20.1745 6.76107 20.5171L7.25478 20.8015C7.84763 21.1432 8.14395 21.3138 8.45869 21.379C8.73714 21.4366 9.02464 21.4344 9.30209 21.3721C9.61567 21.3017 9.90948 21.1258 10.4964 20.7743L10.8502 20.5625C10.9062 20.5289 10.9346 20.5121 10.9626 20.4965C11.2409 20.3418 11.5512 20.2558 11.8695 20.2456C11.9015 20.2446 11.9342 20.2446 11.9994 20.2446C12.0648 20.2446 12.0974 20.2446 12.1295 20.2456C12.4484 20.2559 12.7607 20.3422 13.0394 20.4975C13.0639 20.5112 13.0885 20.526 13.1316 20.5519L13.5078 20.7777C14.0971 21.1315 14.3916 21.3081 14.7065 21.3788C14.985 21.4413 15.2736 21.4438 15.5531 21.3855C15.8685 21.3196 16.1657 21.1471 16.7586 20.803L17.2536 20.5157C17.8418 20.1743 18.1367 20.0031 18.3495 19.7636C18.5383 19.5512 18.6796 19.3011 18.764 19.0297C18.8588 18.7252 18.8531 18.3858 18.8417 17.7119L18.8343 17.2724C18.8332 17.2081 18.8331 17.1761 18.8336 17.1445C18.8383 16.8247 18.9195 16.5104 19.0706 16.2286C19.0856 16.2007 19.1018 16.1726 19.1338 16.1171C19.166 16.0615 19.1827 16.0337 19.1994 16.0068C19.3681 15.7349 19.5995 15.5074 19.8744 15.3435C19.9012 15.3275 19.9289 15.3122 19.9838 15.2818L19.9857 15.2809L20.3472 15.0805C20.9488 14.7472 21.2501 14.5801 21.4689 14.3427C21.6625 14.1327 21.8085 13.8839 21.8978 13.6126C21.9981 13.3077 21.9973 12.9658 21.9958 12.2861L21.9945 11.7119C21.9929 11.0287 21.9921 10.6874 21.891 10.3828C21.8015 10.1133 21.6555 9.86561 21.463 9.65685C21.2457 9.42111 20.9475 9.25526 20.3517 8.92378L20.3499 8.92293Z" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-<path d="M8.00033 12C8.00033 14.2091 9.79119 16 12.0003 16C14.2095 16 16.0003 14.2091 16.0003 12C16.0003 9.79082 14.2095 7.99996 12.0003 7.99996C9.79119 7.99996 8.00033 9.79082 8.00033 12Z" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-</g>
-</g>
-</svg>"""
-
-INFO_SVG = """<?xml version="1.0" encoding="UTF-8"?>
-<svg width="800px" height="800px" viewBox="0 0 24 24" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
-    <title>information_fill</title>
-    <g id="页面-1" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
-        <g id="System" transform="translate(-672.000000, -48.000000)" fill-rule="nonzero">
-            <g id="information_fill" transform="translate(672.000000, 48.000000)">
-                <path d="M24,0 L24,24 L0,24 L0,0 L24,0 Z M12.5934901,23.257841 L12.5819402,23.2595131 L12.5108777,23.2950439 L12.4918791,23.2987469 L12.4918791,23.2987469 L12.4767152,23.2950439 L12.4056548,23.2595131 C12.3958229,23.2563662 12.3870493,23.2590235 12.3821421,23.2649074 L12.3780323,23.275831 L12.360941,23.7031097 L12.3658947,23.7234994 L12.3769048,23.7357139 L12.4804777,23.8096931 L12.4953491,23.8136134 L12.4953491,23.8136134 L12.5071152,23.8096931 L12.6106902,23.7357139 L12.6232938,23.7196733 L12.6232938,23.7196733 L12.6266527,23.7031097 L12.609561,23.275831 C12.6075724,23.2657013 12.6010112,23.2592993 12.5934901,23.257841 L12.5934901,23.257841 Z M12.8583906,23.1452862 L12.8445485,23.1473072 L12.6598443,23.2396597 L12.6498822,23.2499052 L12.6498822,23.2499052 L12.6471943,23.2611114 L12.6650943,23.6906389 L12.6699349,23.7034178 L12.6699349,23.7034178 L12.678386,23.7104931 L12.8793402,23.8032389 C12.8914285,23.8068999 12.9022333,23.8029875 12.9078286,23.7952264 L12.9118235,23.7811639 L12.8776777,23.1665331 C12.8752882,23.1545897 12.8674102,23.1470016 12.8583906,23.1452862 L12.8583906,23.1452862 Z M12.1430473,23.1473072 C12.1332178,23.1423925 12.1221763,23.1452606 12.1156365,23.1525954 L12.1099173,23.1665331 L12.0757714,23.7811639 C12.0751323,23.7926639 12.0828099,23.8018602 12.0926481,23.8045676 L12.108256,23.8032389 L12.3092106,23.7104931 L12.3186497,23.7024347 L12.3186497,23.7024347 L12.3225043,23.6906389 L12.340401,23.2611114 L12.337245,23.2485176 L12.337245,23.2485176 L12.3277531,23.2396597 L12.1430473,23.1473072 Z" id="MingCute" fill-rule="nonzero"></path>
-                <path d="M12,2 C17.5228,2 22,6.47715 22,12 C22,17.5228 17.5228,22 12,22 C6.47715,22 2,17.5228 2,12 C2,6.47715 6.47715,2 12,2 Z M11.99,10 L11,10 C10.4477,10 10,10.4477 10,11 C10,11.51285 10.386027,11.9355092 10.8833761,11.9932725 L11,12 L11,16.99 C11,17.5106133 11.3938293,17.9392373 11.8999333,17.9940734 L12.01,18 L12.5,18 C13.0523,18 13.5,17.5523 13.5,17 C13.5,16.6710222 13.3411062,16.3791012 13.0958694,16.1968582 L13,16.1338 L13,11.01 C13,10.4893867 12.6060836,10.0607627 12.1000493,10.0059266 L11.99,10 Z M12,7 C11.4477,7 11,7.44772 11,8 C11,8.55228 11.4477,9 12,9 C12.5523,9 13,8.55228 13,8 C13,7.44772 12.5523,7 12,7 Z" id="形状" fill="#09244B"></path>
-            </g>
-        </g>
-    </g>
-</svg>"""
-
-SAVE_SVG = """<?xml version="1.0" encoding="utf-8"?>
-<svg width="800px" height="800px" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-<path fill-rule="evenodd" clip-rule="evenodd" d="M18.1716 1C18.702 1 19.2107 1.21071 19.5858 1.58579L22.4142 4.41421C22.7893 4.78929 23 5.29799 23 5.82843V20C23 21.6569 21.6569 23 20 23H4C2.34315 23 1 21.6569 1 20V4C1 2.34315 2.34315 1 4 1H18.1716ZM4 3C3.44772 3 3 3.44772 3 4V20C3 20.5523 3.44772 21 4 21L5 21L5 15C5 13.3431 6.34315 12 8 12L16 12C17.6569 12 19 13.3431 19 15V21H20C20.5523 21 21 20.5523 21 20V6.82843C21 6.29799 20.7893 5.78929 20.4142 5.41421L18.5858 3.58579C18.2107 3.21071 17.702 3 17.1716 3H17V5C17 6.65685 15.6569 8 14 8H10C8.34315 8 7 6.65685 7 5V3H4ZM17 21V15C17 14.4477 16.5523 14 16 14L8 14C7.44772 14 7 14.4477 7 15L7 21L17 21ZM9 3H15V5C15 5.55228 14.5523 6 14 6H10C9.44772 6 9 5.55228 9 5V3Z" fill="#0F0F0F"/>
-</svg>"""
-
-
-def svg_to_qicon(svg_content: str, size: int = 24) -> QIcon:
-    """Converts an SVG string into a QIcon."""
-    renderer = QSvgRenderer(QByteArray(svg_content.encode("utf-8")))
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    renderer.render(painter)
-    painter.end()
-    return QIcon(pixmap)
-
-
-def qicon_from_svg_file(path: str, size: int = 24) -> QIcon:
-    """Converts an SVG file on disk into a QIcon."""
-    if not os.path.exists(path):
-        return QIcon()
-    renderer = QSvgRenderer(path)
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    renderer.render(painter)
-    painter.end()
-    return QIcon(pixmap)
 
 
 # ==========================================
@@ -209,20 +323,6 @@ except ImportError as e:
                 "target_app_id": "PCSG00000",
                 "launch_title_id": "VHBB00001",
                 "dump_folder": "",
-                "vita_port": 1337,
-                "base_font_size": 10,
-                "theme_name": "default",
-            },
-            "MyHomebrewProject": {
-                "log_font_size": 11,
-                "vita_ip": "192.168.0.21",
-                "sdk_path": "/home/user/project_sdk",
-                "last_build_dir": "/home/user/project_build",
-                "log_port": 8081,
-                "exec_path": "/home/user/project_build/eboot.bin",
-                "target_app_id": "NCSJROCRO",
-                "launch_title_id": "NCSJROCRO",
-                "dump_folder": "C:\\vita-parse",
                 "vita_port": 1337,
                 "base_font_size": 10,
                 "theme_name": "default",
@@ -784,6 +884,7 @@ class SettingsTab(QWidget):
 
 class CommandWorker(QThread):
     command_output_signal = Signal(str, str)
+    battery_signal = Signal(int, bool) # Signal for battery updates: (level, is_charging)
 
     def __init__(self):
         super().__init__()
@@ -812,9 +913,12 @@ class CommandWorker(QThread):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.settimeout(5)
-                self.command_output_signal.emit(
-                    f"Attempting to send command: '{command}'", "orange"
-                )
+                # Don't log the 'battery' polling to keep logs clean, unless it fails
+                if command != "battery":
+                    self.command_output_signal.emit(
+                        f"Attempting to send command: '{command}'", "orange"
+                    )
+                
                 s.connect((self.host, self.port))
                 s.sendall(f"{command}\n".encode("utf-8"))
                 response = (
@@ -822,11 +926,29 @@ class CommandWorker(QThread):
                     .decode("utf-8", errors="ignore")
                     .strip()
                 )
+                
+                # Special handling for battery command
+                if command == "battery":
+                    # Expected format: Battery: 54% (Not charging)
+                    # Regex to capture digits and status text inside parens
+                    match = re.search(r"Battery:\s*(\d+)%\s*\((.*)\)", response)
+                    if match:
+                        level = int(match.group(1))
+                        status_text = match.group(2).lower()
+                        # Determine if charging. 
+                        # Assuming "Not charging" means False. Anything else might be True.
+                        # Adjust logic if "Charging" string is different.
+                        is_charging = "not charging" not in status_text
+                        self.battery_signal.emit(level, is_charging)
+                    return # Exit without logging to console
+
                 self.command_output_signal.emit(
                     f"Cmd: {command} -> {response}", "#3ecf4c"
                 )
         except Exception as e:
-            self.command_output_signal.emit(f"Cmd Error: {e}", "red")
+            # Only log errors for non-battery commands to avoid spam if device is offline
+            if command != "battery":
+                self.command_output_signal.emit(f"Cmd Error: {e}", "red")
 
     def stop(self):
         self.running = False
@@ -840,7 +962,7 @@ class CommandWorker(QThread):
 class VitaDeckModern(QWidget):
     # Base64 encoded SVG for the refresh button icon (fallback)
     REFRESH_SVG_B64 = """
-        PD94bWwgdmVyc2lvbj0iMS4wIiA/Pgo8c3ZnIGZpbGw9IiNEQ0RDREMiIHdpZHRoPSI4MDBweCIgaGVpZ2h0PSI4MDBweCIgdmlld0JveD0iMCAwIDk2IDk2IiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPgo8dGl0bGUvPgo8Zz4KPHBhdGggZD0iTTk0LjI0MjIsMzcuNzU3OGE1Ljk5NzksNS45OTc5LDAsMCwwLTguNDg0NCwwbC0yLjYxLDIuNjFBMzYuMDM0NywzNi4wMzQ3LDAsMCwwLDQ4LDEyYTM1LjU1LDM1LjU1LDAsMCwwLTIxLjYyMTEsNy4zNTk0LDUuOTk3Nyw1Ljk5NzcsMCwwLDAsNy4yNDIyLDkuNTYyNUEyMy42Njc3LDIzLjY2NzcsMCwwLDEsNDgsMjQsMjMuOTU3LDIzLjA0MjksMCwwLDEsNzAuNjcyOSw0MC40NzY2bC0zLjk3LTMuMTY0MWE1Ljk5NTYsNS45OTU2LDAsMSwwLTcuNDc2NSw5LjM3NWwxNS4wMzUxLDEyYTUuOTksNS45OSwwLDAsMCw3Ljk4LC0wLjQ0NTNsMTItMTJBNS45OTc5LDUuOTk3OSwwLDAsMCw5NC4yNDIyLDM3Ljc1NzhaIi8+CjxwYXRoIGQ9Ik02Mi4zNzg5LDY3LjA3ODFBMjMuNjY3NSwyMy42Njc1LDAsMCwxLDQ4LDcyLDIzLjE2LDIzLjE2LDAsMCwxLDM1Ljc1NzgsNjcuMDc4MSw1Ljk5NzcsNS45OTc3LDAsMSwwLDI4LjUxNTYsNzYuNDg0NEEzNi4wMzQ3LDM2LjAzNDcsMCwwLDAsNDgsODRhMzUuNTUsMzUuNTUsMCwwLDAsMjEuNjIxMS03LjM1OTQsNS45OTc3LDUuOTk3NywwLDEsMC03LjI0MjItOS41NjI1WiIvPgo8L2c+Cjwvc3ZnPg==
+        PD94bWwgdmVyc2lvbj0iMS4wIiA/Pgo8c3ZnIGZpbGw9IiNEQ0RDREMiIHdpZHRoPSI4MDBweCIgaGVpZ2h0PSI4MDBweCIgdmlld0JveD0iMCAwIDk2IDk2IiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPgo8dGl0bGUvPgo8Zz4KPHBhdGggZD0iTTk0LjI0MjIsMzcuNzU3OGE1Ljk5NzksNS45OTc5LDAsMCwwLTguNDg0NCwwbC0yLjYxLDIuNjFBMzYuMDM0NywzNi4wMzQ3LDAsMCwwLDQ4LDEyYTM1LjU1LDM1LjU1LDAsMCwwLTIxLjYyMTEsNy4zNTk0LDUuOTk3Nyw1Ljk5NzcsMCwwLDAsNy4yNDIyLDkuNTYyNUEyMy42Njc3LDIzLjY2NzcsMCwwLDEsNDgsMjQsMjMuOTU3LDIzLjA0MjksMCwwLDEsNzAuNjcyOSw0MC40NzY2bC0zLjk3LTMuMTY0MWE1Ljk5NTYsNS45OTU2LDAsMSwwLTcuNDc2NSw5LjM3NWwxNS4wMzUxLDEyYTUuOTksNS45OTwwLDAsMCw3Ljk4LC0wLjQ0NTNsMTItMTJBNS45OTc5LDUuOTk3OSwwLDAsMCw5NC4yNDIyLDM3Ljc1NzhaIi8+CjxwYXRoIGQ9Ik02Mi4zNzg5LDY3LjA3ODFBMjMuNjY3NSwyMy42Njc1LDAsMCwxLDQ4LDcyLDIzLjE2LDIzLjE2LDAsMCwxLDM1Ljc1NzgsNjcuMDc4MSw1Ljk5NzcsNS45OTc3LDAsMSwwLDI4LjUxNTYsNzYuNDg0NEEzNi4wMzQ3LDM1LjAzNDcsMCwwLDAsNDgsODRhMzUuNTUsMzUuNTUsMCwwLDAsMjEuNjIxMS03LjM1OTQsNS45OTc3LDUuOTk3Nyw1Ljk5NzcsMCwxLDAtNy4yNDIyLTkuNTYyNVWiIvPgo8L2c+Cjwvc3ZnPg==
     """
 
     IPV4_PATTERN = re.compile(
@@ -876,7 +998,7 @@ class VitaDeckModern(QWidget):
 
         self._pending_app_launch = None
         self._local_ip_cache = self.get_local_ip()
-
+        
         # Command worker
         self.cmd_thread = CommandWorker()
         self.cmd_thread.start()
@@ -986,12 +1108,6 @@ class VitaDeckModern(QWidget):
     def _apply_tab_icons_from_theme(self):
         if not current_theme:
             return
-        """
-        if "terminal" in current_theme.icons and os.path.exists(current_theme.icons["terminal"]):
-            self.tabs.setTabIcon(self.idx_logging, qicon_from_svg_file(current_theme.icons["terminal"], size=16))
-        if "folder" in current_theme.icons and os.path.exists(current_theme.icons["folder"]):
-            self.tabs.setTabIcon(self.idx_transfer, qicon_from_svg_file(current_theme.icons["folder"], size=16))
-        """
 
     # ---- tab bar icons ----
     def setup_tab_icons(self):
@@ -1066,6 +1182,10 @@ class VitaDeckModern(QWidget):
         if hasattr(self, "btn_refresh_ip"):
             self.btn_refresh_ip.setIcon(self._get_refresh_icon())
         self._apply_tab_icons_from_theme()
+        
+        # Update Battery Widget theme
+        if hasattr(self, 'battery_widget') and current_theme:
+            self.battery_widget.update_theme_path(current_theme.base_dir)
 
     # ---- launch-after-upload ----
     @Slot(str)
@@ -1074,6 +1194,7 @@ class VitaDeckModern(QWidget):
             status_msg == "Idle" or "Success" in status_msg
         ):
             app_id = self._pending_app_launch
+            # Delay launch command slightly
             QTimer.singleShot(
                 500, lambda: self.send_command(f"launch {app_id}")
             )
@@ -1298,8 +1419,6 @@ QTextEdit#logOutput, QPlainTextEdit#logOutput {{
         """
 
 
-
-
     # ------------------------------
     # Sidebar
     # ------------------------------
@@ -1323,7 +1442,11 @@ QTextEdit#logOutput, QPlainTextEdit#logOutput {{
 
         btn_reconnect = QPushButton("Reconnect FTP")
         if hasattr(self.tab_transfer, "connect_ftp"):
-            btn_reconnect.clicked.connect(self.tab_transfer.connect_ftp)
+            # Also request battery update when reconnecting
+            btn_reconnect.clicked.connect(lambda: (
+                self.tab_transfer.connect_ftp(),
+                self.request_battery_update()
+            ))
         else:
             btn_reconnect.setEnabled(False)
         ip_layout.addWidget(btn_reconnect)
@@ -1336,7 +1459,11 @@ QTextEdit#logOutput, QPlainTextEdit#logOutput {{
 
         btn_fetch_parse = QPushButton("Fetch and parse last crash")
         if hasattr(self.tab_core, "fetch_and_parse_last_crash"):
-            btn_fetch_parse.clicked.connect(self.tab_core.fetch_and_parse_last_crash)
+            # Also request battery update
+            btn_fetch_parse.clicked.connect(lambda: (
+                self.tab_core.fetch_and_parse_last_crash(),
+                self.request_battery_update()
+            ))
         else:
             btn_fetch_parse.setEnabled(False)
         core_layout.addWidget(btn_fetch_parse)
@@ -1493,6 +1620,9 @@ QTextEdit#logOutput, QPlainTextEdit#logOutput {{
         self.tab_transfer.ftp_thread.add_command(
             "upload", local_path, remote_path, True
         )
+        
+        # Trigger battery update
+        self.request_battery_update()
 
         # Switch to Logging tab (use stored index instead of hard-coded 1)
         self.tabs.setCurrentIndex(self.idx_logging)
@@ -1506,6 +1636,10 @@ QTextEdit#logOutput, QPlainTextEdit#logOutput {{
             return
         self.send_command(f"launch {title_id}")
 
+    def request_battery_update(self):
+        """Queues a battery status check."""
+        self.cmd_thread.add_command("battery")
+
     def send_command(self, command):
         if command in ("destroy", "reboot"):
             reply = QMessageBox.question(
@@ -1518,6 +1652,10 @@ QTextEdit#logOutput, QPlainTextEdit#logOutput {{
                 return
 
         self.cmd_thread.add_command(command)
+        
+        # Queue battery check after command
+        self.request_battery_update()
+        
         # Switch to Logging tab (again, index of logging)
         self.tabs.setCurrentIndex(self.idx_logging)
 
@@ -1617,6 +1755,15 @@ QTextEdit#logOutput, QPlainTextEdit#logOutput {{
         status_bar_layout.addWidget(self.transfer_label)
 
         status_bar_layout.addStretch()
+        
+        # --- Battery Widget (Bottom Right) ---
+        theme_path = os.path.join(THEMES_DIR, settings.get("theme_name", "default"))
+        self.battery_widget = BatteryWidget(theme_path)
+        status_bar_layout.addWidget(self.battery_widget)
+        # Connect battery signal
+        self.cmd_thread.battery_signal.connect(self.battery_widget.update_battery)
+        
+        status_bar_layout.addSpacing(10)
 
         self.setup_local_ip_status(status_bar_layout)
         layout.addLayout(status_bar_layout)
