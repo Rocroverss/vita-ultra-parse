@@ -1041,7 +1041,7 @@ class VitaDeckModern(QWidget):
 
         # SDK installation tab (visible)
         self.tab_sdk = SdkInstallationTab()
-        self.idx_sdk = self.tabs.addTab(self.tab_sdk, "SDK Install")
+        self.idx_sdk = self.tabs.addTab(self.tab_sdk, "SDK")
 
         # Help tab (hidden in tab bar, accessed via icon)
         self.tab_help = HelpTab()

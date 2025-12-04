@@ -7,7 +7,7 @@
             "log_port": 8080,
             "sdk_path": "/usr/local/vitasdk",
             "dump_folder": "C:\\Users\\rocro\\Desktop\\vita-ultra-parse",
-            "last_build_dir": "/home/mint/Desktop/rinnetutorial/ncsj/build",
+            "last_build_dir": "C:/Users/rocro/OneDrive/Escritorio/vita-ultra-parse/examples/build",
             "launch_title_id": "NCSJROCRO",
             "font_size": 10,
             "log_font_size": 9,
