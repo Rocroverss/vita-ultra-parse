@@ -1276,7 +1276,9 @@ class VitaDeckModern(QWidget):
         log_border = p("log_border", "#333")
         log_text = p("log_text", "#c0c0c0")
         log_font = p("log_font_family", "Consolas, Monospace")
-
+# THE FIX: Define the status bar colors
+        status_bg = p("status_bar_bg", "#252525")
+        status_border = p("status_bar_border", "#3c3c3c")
         return f"""
 QWidget {{
     background-color: {bg};
@@ -1416,6 +1418,39 @@ QTextEdit#logOutput, QPlainTextEdit#logOutput {{
     font-family: {log_font};
     font-size: {log_font_size}pt;
 }}
+
+#statusBarFrame {{
+    background-color: {status_bg};
+    border: 1px solid {status_border};
+    border-radius: 12px; /* Consistent with sidebar and tabs */
+    margin-top: 5px;
+}}
+
+
+/* Add style for the icon button to ensure it's flat and inherits styles */
+#statusBarFrame QPushButton {{
+    background-color: transparent; /* Don't want a full background box */
+    border: none;
+    padding: 0;
+}}
+
+#statusBarFrame QPushButton:hover {{
+    background-color: {btn_bg_hover};
+    border: none;
+}}
+
+#statusBarFrame QPushButton:pressed {{
+    background-color: {btn_bg_pressed};
+    border: none;
+}}
+
+#statusBarFrame QLabel {{
+    background-color: transparent;
+    padding: 0;
+    margin: 0;
+}}
+        
+
         """
 
 
@@ -1662,6 +1697,8 @@ QTextEdit#logOutput, QPlainTextEdit#logOutput {{
     # ------------------------------
     # Status bar / local IP
     # ------------------------------
+# ... inside VitaDeckModern class ...
+    
     def setup_local_ip_status(self, layout):
         inactive = self.theme_color("status_inactive", "#777")
 
@@ -1672,16 +1709,19 @@ QTextEdit#logOutput, QPlainTextEdit#logOutput {{
         self.local_ip_label.setStyleSheet(f"color: {inactive};")
         layout.addWidget(self.local_ip_label)
 
+        # The refresh button will now adopt the normal QPushButton style
         self.btn_refresh_ip = QPushButton()
-        # Use themed refresh icon (falls back to embedded SVG)
+        self.btn_refresh_ip.setFlat(True) # Ensure it looks like an icon button
         self.btn_refresh_ip.setIcon(self._get_refresh_icon())
-        self.btn_refresh_ip.setIconSize(QSize(16, 16))
-        self.btn_refresh_ip.setFixedSize(QSize(28, 28))
+        self.btn_refresh_ip.setIconSize(QSize(20, 20)) # Match tab corner icons
+        self.btn_refresh_ip.setFixedSize(QSize(28, 28)) # Match tab corner icons
         self.btn_refresh_ip.setToolTip("Refresh Local IP & Network Status")
         self.btn_refresh_ip.clicked.connect(
             lambda: self.update_local_ip_status(initial=False, force_refresh=True)
         )
         layout.addWidget(self.btn_refresh_ip)
+
+    # ...
 
     def _apply_final_ip_status(self):
         self._local_ip_cache = self.get_local_ip()
@@ -1734,12 +1774,29 @@ QTextEdit#logOutput, QPlainTextEdit#logOutput {{
         else:
             self._apply_final_ip_status()
 
+# ... inside VitaDeckModern class ...
+    
     def setup_status_bar(self, layout):
-        status_bar_layout = QHBoxLayout()
-        status_bar_layout.setContentsMargins(12, 4, 12, 4)
+        # 1. Create a QFrame to act as the rounded container for the status bar
+        self.status_frame = QFrame()
+        self.status_frame.setObjectName("statusBarFrame") 
+        # Apply style sheet for rounded corners and border in _get_style_sheet
+        
+        status_bar_layout = QHBoxLayout(self.status_frame)
+        status_bar_layout.setContentsMargins(12, 8, 12, 8) # Add vertical padding
 
         inactive = self.theme_color("status_inactive", "#777")
+        
+        # --- 1. Battery Widget (Left-most) ---
+        theme_path = os.path.join(THEMES_DIR, settings.get("theme_name", "default"))
+        self.battery_widget = BatteryWidget(theme_path)
+        status_bar_layout.addWidget(self.battery_widget)
+        # Connect battery signal
+        self.cmd_thread.battery_signal.connect(self.battery_widget.update_battery)
+        
+        status_bar_layout.addSpacing(20)
 
+        # --- 2. Connection Status (Dot + Label) ---
         self.conn_dot = ColorDot(inactive, size=12)
         status_bar_layout.addWidget(self.conn_dot)
         self.conn_label = QLabel("Not connected")
@@ -1748,25 +1805,22 @@ QTextEdit#logOutput, QPlainTextEdit#logOutput {{
 
         status_bar_layout.addSpacing(20)
 
+        # --- 3. Transfer Status (Dot + Label) ---
         self.transfer_dot = ColorDot(inactive, size=12)
         status_bar_layout.addWidget(self.transfer_dot)
-        self.transfer_label = QLabel("Not transfer file in progress")
+        self.transfer_label = QLabel("File transfer idle") # Changed default text
         self.transfer_label.setStyleSheet(f"color: {inactive};")
         status_bar_layout.addWidget(self.transfer_label)
 
         status_bar_layout.addStretch()
         
-        # --- Battery Widget (Bottom Right) ---
-        theme_path = os.path.join(THEMES_DIR, settings.get("theme_name", "default"))
-        self.battery_widget = BatteryWidget(theme_path)
-        status_bar_layout.addWidget(self.battery_widget)
-        # Connect battery signal
-        self.cmd_thread.battery_signal.connect(self.battery_widget.update_battery)
-        
-        status_bar_layout.addSpacing(10)
-
+        # --- 4. Local IP Status (Right-most) ---
         self.setup_local_ip_status(status_bar_layout)
-        layout.addLayout(status_bar_layout)
+        
+        # Add the frame to the main window layout
+        layout.addWidget(self.status_frame)
+
+    # ...
 
     @Slot(str, str)
     def update_connection_status(self, message, color):
