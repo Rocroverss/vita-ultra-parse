@@ -272,7 +272,7 @@ class Theme:
             'aspect_ratio_mode': self.aspect_ratio_mode
         }
 
-        print(f"Theme '{self.name}' loaded successfully. Opacity: {self.opacity}, Image: {self.image_location}")
+        #print(f"Theme '{self.name}' loaded successfully. Opacity: {self.opacity}, Image: {self.image_location}")
 
     def _load_palette(self):
         """Parse theme.txt as simple key=value or key: value lines."""
@@ -1595,7 +1595,7 @@ class VitaDeckModern(QWidget):
         if qss_content:
             # Apply the style to the global QApplication instance
             QApplication.instance().setStyleSheet(qss_content)
-            print(f"Style applied successfully from theme '{current_theme.name}'")
+            #print(f"Style applied successfully from theme '{current_theme.name}'")
         else:
             print("Warning: No QSS content generated")
 
