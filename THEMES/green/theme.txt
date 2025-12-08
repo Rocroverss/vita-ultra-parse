@@ -1,12 +1,11 @@
-
 # ===== THEME BACKGROUND =====
 # Path is relative to the current theme directory (e.g., 'THEMES/mytheme/')
 # Set to 'none' or leave blank to disable the image.
-image_location = background.png
+image_location = background.jpg 
 
 # Opacity of the main window (0.0 to 1.0). 1.0 is fully opaque.
 # Note: Some OS/Window Managers might not fully respect this.
-opacity = 0.95 
+opacity = 0.95
 
 # Aspect ratio mode for the background image:
 # 'scale' (stretches to fill window), 
@@ -16,46 +15,45 @@ aspect_ratio_mode = keep
 
 # ===== THEME VARIABLES =====
 
-background = #1e1e1e
-foreground = #dcdcdc
+background = #0f1f16
+foreground = #d8ffe8
 
-group_border = #3c3c3c
-group_title = #aaa
+group_border = #2e6a4f
+group_title = #8fffcf
 group_bg = transparent
 
-sidebar_bg = #252525
-sidebar_border = #3c3c3c
+sidebar_bg = #13281d
+sidebar_border = #2e6a4f
 
-input_bg = #2d2d2d
-input_border = #444
-input_fg = #e0e0e0
+input_bg = #173226
+input_border = #2e6a4f
+input_fg = #d8ffe8
 
-button_bg = #2f4f6f
-button_border = #3a5f80
-button_fg = #ffffff
-button_hover_bg = #3a668a
-button_pressed_bg = #2a5975
-button_disabled_bg = #222
-button_disabled_fg = #555
-button_disabled_border = #333
+button_bg = #1f7a55
+button_border = #2fa372
+button_fg = #ecfff8
+button_hover_bg = #27a06e
+button_pressed_bg = #176145
+button_disabled_bg = #0c2620
+button_disabled_fg = #3f7a63
+button_disabled_border = #1b4f3f
 
-tab_pane_border = #3c3c3c
-tab_pane_bg = #1e1e1e
-tab_bg = #2a2a2a
-tab_fg = #dcdcdc
-tab_selected_bg = #2f4f6f
-tab_selected_border = #3a5f80
-tab_selected_fg = #ffffff
-tab_hover_bg = #3a3a3a
+tab_pane_border = #2e6a4f
+tab_pane_bg = #0f1f16
+tab_bg = #153527
+tab_fg = #d8ffe8
+tab_selected_bg = #1f7a55
+tab_selected_border = #2fa372
+tab_selected_fg = #ecfff8
+tab_hover_bg = #1e4f3a
 
-log_bg = #111
-log_border = #333
-log_text = #c0c0c0
+log_bg = #091510
+log_border = #2e6a4f
+log_text = #a6ffd9
 log_font_family = Consolas, Monospace
 
-status_bar_bg = #252525
-status_bar_border = #3c3c3c
-
+status_bar_bg = #13281d
+status_bar_border = #2e6a4f
 
 # ===== QSS START =====
 
@@ -182,3 +180,4 @@ QTextEdit#logOutput, QPlainTextEdit#logOutput {{
     padding: 0;
     margin: 0;
 }}
+

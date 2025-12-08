@@ -3,8 +3,8 @@ import os
 import socket
 import threading
 import re
-from typing import Optional
-
+import base64 
+from typing import Optional, Any, Dict
 from PySide6.QtWidgets import (
     QApplication, QWidget, QHBoxLayout, QVBoxLayout,
     QPushButton, QLabel, QLineEdit, QTabWidget,
@@ -196,21 +196,90 @@ class BatteryWidget(QWidget):
 
 
 class Theme:
-    def __init__(self, name: str, base_dir: str):
-        self.name = name
-        self.base_dir = base_dir
-        self.palette: dict[str, str] = {}
-        self.icons: dict[str, str] = {}
-
+    def __init__(self, name: str, theme_dir: Path, parsed_sections: Dict[str, Dict[str, str]]):
+        self.name: str = name
+        self.theme_dir: Path = theme_dir
+        self.base_dir: str = str(theme_dir)  # Add base_dir for compatibility
+        self.parsed_sections = parsed_sections
+        
+        # --- Attributes required for styling (with sensible defaults) ---
+        self.opacity: float = 1.0 
+        self.image_location: str = 'none'
+        self.aspect_ratio_mode: str = 'keep'
+        self.color_palette: Dict[str, str] = {}
+        self.palette: Dict[str, str] = {}
+        self.icons: Dict[str, str] = {}
+        self.background_settings: Dict[str, str] = {}
+        
+        # Load configuration immediately in __init__
+        self._load_config()
+        self._load_palette()
+        self._load_icons()
+        
     def load(self):
+        """Public method for reloading configuration if needed."""
+        self._load_config()
         self._load_palette()
         self._load_icons()
 
+    def _parse_theme_line(self, line: str, key_name: str, default_value: Any) -> Any:
+        """Helper to parse a specific setting from a configuration line."""
+        match = re.search(fr"^{re.escape(key_name)}\s*=\s*([^\s#]+)", line, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        return default_value
+
+    def _load_config(self):
+        """Loads all settings from the theme.txt file."""
+        config_path = self.theme_dir / "theme.txt"
+        
+        if not config_path.is_file():
+            print(f"Error: Theme config file not found at {config_path}")
+            return
+            
+        try:
+            content = config_path.read_text()
+        except Exception as e:
+            print(f"Error reading theme config: {e}")
+            return
+
+        lines = content.splitlines()
+
+        # Parse background settings
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+                
+            # --- Background and Opacity Settings ---
+            if line.lower().startswith("opacity"):
+                val = self._parse_theme_line(line, "opacity", "1.0")
+                try:
+                    self.opacity = float(val)
+                except ValueError:
+                    self.opacity = 1.0
+            
+            elif line.lower().startswith("image_location"):
+                self.image_location = self._parse_theme_line(line, "image_location", 'none')
+
+            elif line.lower().startswith("aspect_ratio_mode"):
+                self.aspect_ratio_mode = self._parse_theme_line(line, "aspect_ratio_mode", 'keep').lower()
+
+        # Store background settings in a dict for easier access
+        self.background_settings = {
+            'opacity': str(self.opacity),
+            'image_location': self.image_location,
+            'aspect_ratio_mode': self.aspect_ratio_mode
+        }
+
+        print(f"Theme '{self.name}' loaded successfully. Opacity: {self.opacity}, Image: {self.image_location}")
+
     def _load_palette(self):
         """Parse theme.txt as simple key=value or key: value lines."""
-        theme_file = os.path.join(self.base_dir, "theme.txt")
-        palette: dict[str, str] = {}
-        if os.path.exists(theme_file):
+        theme_file = self.theme_dir / "theme.txt"
+        palette: Dict[str, str] = {}
+        
+        if theme_file.exists():
             try:
                 with open(theme_file, "r", encoding="utf-8") as f:
                     for line in f:
@@ -226,12 +295,14 @@ class Theme:
                         palette[key.strip()] = val.strip()
             except Exception as e:
                 print(f"Warning: failed to read theme file '{theme_file}': {e}")
+        
         self.palette = palette
+        self.color_palette = palette  # For compatibility
 
     def _load_icons(self):
         """Map logical icon keys to SVG files inside the theme folder."""
         def icon_path(filename: str) -> str:
-            return os.path.join(self.base_dir, filename)
+            return str(self.theme_dir / filename)
 
         self.icons = {
             "workspace": icon_path("alt-workspace.svg"),
@@ -249,22 +320,80 @@ class Theme:
 current_theme: Optional[Theme] = None
 
 
-def load_theme(theme_name: str = "default") -> Theme:
-    """Create and load a Theme instance from THEMES/<theme_name>."""
-    global current_theme
+from pathlib import Path
+import os
+# ... (other imports) ...
 
-    base_dir = os.path.join(THEMES_DIR, theme_name)
-    if not os.path.isdir(base_dir):
+def load_theme(theme_name: str, base_dir: Optional[Path] = None) -> Optional["Theme"]:
+    global THEMES_DIR, current_theme
+    
+    if base_dir:
+        # If an explicit base_dir is provided (e.g., from the main window during init)
+        theme_path = base_dir
+    else:
+        # Default path based on theme name
+        theme_path = Path(THEMES_DIR) / theme_name
+        
+    theme_file = theme_path / "theme.txt"
+    
+    # CRITICAL FALLBACK LOGIC: If the selected theme is not found, fall back to "default"
+    if not theme_file.exists():
         if theme_name != "default":
-            print(f"Warning: theme '{theme_name}' not found, falling back to 'default'")
-        base_dir = os.path.join(THEMES_DIR, "default")
+            print(f"Warning: theme '{theme_name}' not found at {theme_path}. Falling back to default.")
+        
+        # Reset to default theme path
+        theme_name = "default"
+        theme_path = Path(THEMES_DIR) / "default"
+        theme_file = theme_path / "theme.txt"
+        
+        # If even the default theme is missing, we must fail gracefully
+        if not theme_file.exists():
+            print(f"CRITICAL ERROR: Default theme file not found: {theme_file}")
+            return None 
 
-    theme = Theme(theme_name, base_dir)
-    theme.load()
-    current_theme = theme
-    return theme
+    # 1. Parse Theme File into sections
+    parsed_sections = {}
+    current_section = None
 
-
+    try:
+        with theme_file.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                
+                # Check for section headers (e.g., # ===== THEME VARIABLES =====)
+                if line.startswith("# ===== ") and line.endswith(" ====="):
+                    # Extract the section name
+                    section_name = line.strip("#= ") 
+                    current_section = section_name
+                    parsed_sections[current_section] = {}
+                    continue
+                
+                # Check for key=value variables
+                if current_section and "=" in line:
+                    key, value = line.split("=", 1)
+                    parsed_sections[current_section][key.strip()] = value.strip()
+                    
+    except Exception as e:
+        print(f"Error parsing theme file {theme_file}: {e}")
+        # If parsing fails, fall back to a known-good (default) theme if not already using it.
+        if theme_name != "default":
+            print("Attempting to load default theme instead.")
+            return load_theme("default")
+        return None
+    
+    
+    # 2. Create the Theme object, load it, and set it globally (ONLY ONCE)
+    try:
+        theme = Theme(theme_name, theme_path, parsed_sections) 
+        theme.load()
+        current_theme = theme
+        return theme
+    except Exception as e:
+        print(f"CRITICAL ERROR: Failed to create Theme object with valid data: {e}")
+        return None
+    
 # ==========================================
 # REAL MODULES OR MOCK FALLBACKS
 # ==========================================
@@ -970,6 +1099,61 @@ class VitaDeckModern(QWidget):
         r"(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$"
     )
 
+    def _apply_background_settings(self):
+        """Applies theme background image, opacity, and scaling."""
+        
+        if not current_theme:
+            self.setWindowOpacity(1.0)
+            # Clear app stylesheet just in case
+            QApplication.instance().setStyleSheet(QApplication.instance().styleSheet().replace("VitaDeckModern {", ""))
+            return
+
+        # --- SAFETY NET ADDED HERE ---
+        # Provide a fallback dictionary if the attribute is missing
+        bg_settings = getattr(current_theme, "background_settings", {})
+        # -----------------------------
+        
+        # 1. Apply Opacity
+        try:
+            # Use the fallback dictionary (bg_settings)
+            opacity = float(bg_settings.get("opacity", 1.0))
+            self.setWindowOpacity(opacity)
+        except ValueError:
+            self.setWindowOpacity(1.0)
+            
+        # 2. Apply Background Image via QSS
+        img_path_str = bg_settings.get("image_location") # Use bg_settings
+        aspect_mode = bg_settings.get("aspect_ratio_mode", "keep").lower() # Use bg_settings
+
+        if img_path_str and img_path_str.lower() != 'none':
+            # Construct the absolute path to the image file
+            img_path = Path(current_theme.base_dir) / img_path_str
+            
+            if img_path.exists():
+                # ... rest of the QSS logic remains the same ...
+                # If you applied the style sheet to the app object, you should use app.setStyleSheet()
+                # If you applied it to the main window, use self.setStyleSheet()
+                
+                # Example for QWidget background:
+                img_url = img_path.as_uri()
+                # ... determine bg_repeat, bg_size, bg_position ...
+                
+                qss = f"""
+                VitaDeckModern {{
+                    background-image: url('{img_url}');
+                    /* ... other background properties ... */
+                }}
+                """
+                # Apply the style sheet (assuming self refers to VitaDeckModern)
+                self.setStyleSheet(self.styleSheet() + qss) 
+            else:
+                print(f"Warning: Background image not found at {img_path}")
+                self.setStyleSheet("") # Clear image style if missing
+        else:
+            self.setStyleSheet("") # Clear any image style
+
+
+
     @staticmethod
     def get_local_ip():
         local_ip = "127.0.0.1"
@@ -991,18 +1175,24 @@ class VitaDeckModern(QWidget):
             pass
         return local_ip
 
+    
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Vitadeck - Manager & Debugger")
         self.resize(1200, 700)
-
+        
+        # Set the object name for QSS targeting
+        self.setObjectName("VitaDeckModern")
+        
+        # Initialize these first before any UI setup
         self._pending_app_launch = None
         self._local_ip_cache = self.get_local_ip()
         
-        # Command worker
+        # Command worker - initialize early
         self.cmd_thread = CommandWorker()
         self.cmd_thread.start()
 
+        # Create main layout
         main_layout = QVBoxLayout(self)
         content_and_sidebar = QHBoxLayout()
 
@@ -1049,6 +1239,7 @@ class VitaDeckModern(QWidget):
 
         # Settings tab (hidden in tab bar, accessed via icon)
         self.tab_settings = SettingsTab()
+        
         self.tab_settings.restart_log_server_signal.connect(self.restart_logging_server)
         self.tab_settings.apply_style_signal.connect(self.apply_style)
         self.tab_settings.theme_changed.connect(self.change_theme)
@@ -1065,16 +1256,21 @@ class VitaDeckModern(QWidget):
 
         content_and_sidebar.addWidget(self.tabs, stretch=4)
 
-        # Sidebar
+        # Sidebar - CREATE UI WIDGETS BEFORE applying settings
         self.setup_sidebar(content_and_sidebar)
         main_layout.addLayout(content_and_sidebar)
 
-        # Status bar
+        # Status bar - CREATE UI WIDGETS BEFORE applying settings
         self.setup_status_bar(main_layout)
 
-        # Apply workspace settings & theme
+        # NOW apply workspace settings and theme AFTER all widgets exist
         self.apply_workspace_settings(initial=True)
         self._apply_tab_icons_from_theme()
+
+        # Apply theme opacity and background AFTER window is fully constructed
+        if current_theme:
+            self.setWindowOpacity(current_theme.opacity)
+            self._apply_background_settings()
 
         if type(settings).__name__ == "MockSettings":
             QMessageBox.warning(
@@ -1095,15 +1291,11 @@ class VitaDeckModern(QWidget):
         if current_theme and "refresh" in current_theme.icons:
             path = current_theme.icons["refresh"]
             if os.path.exists(path):
-                return qicon_from_svg_file(path, size=16)
-        svg_data = QByteArray.fromBase64(self.REFRESH_SVG_B64.encode("utf-8"))
-        renderer = QSvgRenderer(svg_data)
-        pixmap = QPixmap(QSize(20, 20))
-        pixmap.fill(Qt.transparent)
-        painter = QPainter(pixmap)
-        renderer.render(painter)
-        painter.end()
-        return QIcon(pixmap)
+                return qicon_from_svg_file(path, size=20)
+        
+        # Fallback: decode the base64 SVG and convert it to a QIcon
+        svg_content = base64.b64decode(self.REFRESH_SVG_B64).decode("utf-8")
+        return svg_to_qicon(svg_content, size=20)
 
     def _apply_tab_icons_from_theme(self):
         if not current_theme:
@@ -1111,37 +1303,58 @@ class VitaDeckModern(QWidget):
 
     # ---- tab bar icons ----
     def setup_tab_icons(self):
+# 1. Explicitly destroy the old corner widget first for a clean update
+        old_corner_widget = self.tabs.cornerWidget(Qt.TopRightCorner)
+        if old_corner_widget:
+            # deleteLater is crucial for safe Qt object destruction
+            old_corner_widget.deleteLater()
+            # Clear the reference to avoid using the deleted widget
+            self.tabs.setCornerWidget(None, Qt.TopRightCorner)
+
+        # 2. Create a new container widget
         corner_widget = QWidget()
-
-        # Normal margins; we'll instead create vertical space by moving the pane down.
         corner_layout = QHBoxLayout(corner_widget)
-        corner_layout.setContentsMargins(0, 0, 0, 0)
+        corner_layout.setContentsMargins(0, 0, 8, 0)
         corner_layout.setSpacing(4)
-
+        
+        # Define the icon buttons and their targets
         icon_tabs = [
-            ("Workspace", self.tab_workspace, "workspace", SAVE_SVG),
-            ("Settings", self.tab_settings, "settings", SETTINGS_SVG),
-            ("Help", self.tab_help, "help", INFO_SVG),
+            # (Name, Tab Index, Icon Key, Fallback SVG Content)
+            ("Workspace", self.idx_workspace, "workspace", SAVE_SVG),
+            ("Settings", self.idx_settings, "settings", SETTINGS_SVG),
+            ("Help", self.idx_help, "help", INFO_SVG),
         ]
 
-        self.icon_buttons = []
+        # Use an instance attribute to keep references to the buttons
+        if not hasattr(self, 'icon_buttons'):
+            self.icon_buttons = []
+        else:
+            self.icon_buttons.clear()
 
-        for name, widget, icon_key, fallback_svg in icon_tabs:
+
+        for name, tab_index, icon_key, fallback_svg in icon_tabs:
             btn = QPushButton()
             btn.setFlat(True)
-            btn.setIcon(self._get_themed_icon(icon_key, fallback_svg, size=20))
+            
+            # Fetch the themed icon (using the helper method below)
+            icon = self._get_themed_icon(icon_key, fallback_svg, size=20)
+            btn.setIcon(icon)
             btn.setIconSize(QSize(20, 20))
             btn.setFixedSize(28, 28)
             btn.setToolTip(name)
-            btn.clicked.connect(
-                lambda checked=False, w=widget: self.tabs.setCurrentWidget(w)
-            )
+            
+            # Connect the button to switch tabs using the stored index
+            # This lambda captures the current tab_index correctly
+            btn.clicked.connect(lambda checked=False, idx=tab_index: self.tabs.setCurrentIndex(idx))
+            
             corner_layout.addWidget(btn)
             self.icon_buttons.append(btn)
 
         corner_layout.addStretch()
+        
+        # 3. Assign the new widget to the corner
         self.tabs.setCornerWidget(corner_widget, Qt.TopRightCorner)
-
+        corner_widget.show() # Explicitly show the widget
 
     # ---- workspace + theme ----
     @Slot()
@@ -1176,14 +1389,23 @@ class VitaDeckModern(QWidget):
 
     @Slot(str)
     def change_theme(self, theme_name: str, from_workspace: bool = False):
+        # 1. Load the theme data (Settings the global current_theme)
         load_theme(theme_name)
+        
+        # 2. Re-apply styles (Colors, Fonts)
         self.apply_style(initial=False)
-        self.setup_tab_icons()
+
+        # 3. APPLY BACKGROUND IMAGE, OPACITY, AND ASPECT RATIO SETTINGS
+        self._apply_background_settings() # <--- NEW CALL
+        
+        # 3. Re-build the corner icons using the new theme paths AND RE-ASSIGN THEM
+        self.setup_tab_icons() # <-- This is the key call
+        
+        # 4. Update specific icons that aren't in the corner
         if hasattr(self, "btn_refresh_ip"):
             self.btn_refresh_ip.setIcon(self._get_refresh_icon())
-        self._apply_tab_icons_from_theme()
         
-        # Update Battery Widget theme
+        # 5. Update Battery Widget
         if hasattr(self, 'battery_widget') and current_theme:
             self.battery_widget.update_theme_path(current_theme.base_dir)
 
@@ -1209,250 +1431,173 @@ class VitaDeckModern(QWidget):
     def restart_logging_server(self, port):
         if hasattr(self.tab_logging, "restart_server"):
             self.tab_logging.restart_server(port)
+    @Slot(str)
+    def handle_theme_change(self, theme_name: str):
+        """Loads the theme and reapplies the application's style sheet."""
+        # 1. Load the new theme (updates global current_theme)
+        load_theme(theme_name)
+        
+        # 2. Reapply the style sheet which now uses the new current_theme
+        self.apply_style()
+        
+        # 3. Inform dependent widgets (like the BatteryWidget) to update their paths
+        if current_theme:
+            self.battery_widget.update_theme_path(current_theme.base_dir)
+
+
+
+    # Replace the _get_style_sheet method in VitaDeckModern class
+
+    def _get_style_sheet(self, base_font_size: int, log_font_size: int) -> str:
+        """Generates the full QSS string, including background image rules."""
+        global current_theme
+        
+        if not current_theme:
+            return ""
+        
+        qss_parts = []
+        
+        # 1. Load and parse theme.txt file
+        theme_file = current_theme.theme_dir / "theme.txt"
+        
+        if not theme_file.exists():
+            print(f"Warning: theme.txt not found at {theme_file}")
+            return ""
+        
+        variables = {}
+        qss_lines = []
+        in_qss = False
+        
+        try:
+            with open(theme_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    stripped = line.strip()
+                    
+                    # Check for QSS section start
+                    if stripped == "# ===== QSS START =====":
+                        in_qss = True
+                        continue
+                    
+                    # VARIABLES PART (before QSS START)
+                    if not in_qss:
+                        if not stripped or stripped.startswith("#") or "=" not in stripped:
+                            continue
+                        k, v = stripped.split("=", 1)
+                        variables[k.strip()] = v.strip()
+                    
+                    # QSS PART (after QSS START)
+                    else:
+                        qss_lines.append(line.rstrip("\n"))
+        
+        except Exception as e:
+            print(f"Error reading theme file: {e}")
+            return ""
+        
+        # 2. Inject runtime values
+        variables["base_font_size"] = str(base_font_size)
+        variables["log_font_size"] = str(log_font_size)
+        
+        # 3. Join QSS lines and format with variables
+        qss = "\n".join(qss_lines)
+        
+        try:
+            qss = qss.format(**variables)
+        except KeyError as e:
+            print(f"Warning: Missing variable in theme: {e}")
+        
+        qss_parts.append(qss)
+        
+        # 4. Add background image styling if configured
+        image_uri = self._get_background_uri()
+        
+        if image_uri:
+            aspect_mode = current_theme.aspect_ratio_mode.lower()
+            background_style = ""
+            
+            if aspect_mode == 'scale':
+                # Stretches to fill the entire window
+                background_style = f"border-image: {image_uri} 0 0 0 0 stretch stretch;"
+            elif aspect_mode == 'keep':
+                # Maintains aspect ratio, fitting inside the window
+                background_style = (
+                    f"background-image: {image_uri};"
+                    f"background-repeat: no-repeat;"
+                    f"background-position: center center;"
+                    f"background-size: contain;"
+                )
+            else:  # 'none' or original size
+                background_style = (
+                    f"background-image: {image_uri};"
+                    f"background-repeat: no-repeat;"
+                    f"background-position: center center;"
+                )
+            
+            # Apply to main window
+            main_window_style = f"""
+    #VitaDeckModern {{
+        {background_style}
+    }}
+    """
+            qss_parts.append(main_window_style)
+        
+        return "\n".join(qss_parts)
+
+
+    # Replace the _get_background_uri method in VitaDeckModern class
+
+    def _get_background_uri(self) -> Optional[str]:
+        """Resolves the background image path to a QSS-compatible file URI."""
+        global current_theme
+        
+        if not current_theme:
+            return None
+        
+        image_location = current_theme.image_location
+        
+        if not image_location or image_location.lower() == 'none':
+            return None
+        
+        # Construct the absolute path: Theme directory + image file name
+        image_path = current_theme.theme_dir / image_location
+        
+        if not image_path.is_file():
+            print(f"Warning: Background image not found at {image_path}")
+            return None
+        
+        # Convert to absolute URI with proper forward slashes
+        # Use as_posix() to ensure forward slashes on all platforms
+        abs_path = image_path.resolve().as_posix()
+        
+        # Return properly formatted file URI for QSS
+        return f"url('file:///{abs_path}')"
+
+
+    # Replace the _apply_background_settings method in VitaDeckModern class
+
+    # Replace the apply_style method in VitaDeckModern class
 
     @Slot()
     def apply_style(self, initial=False):
-        log_font_size = settings.get("log_font_size", 13)
-        base_font_size = settings.get("base_font_size", 10)
-
-        self.setStyleSheet(self._get_style_sheet(base_font_size, log_font_size))
-
-        if hasattr(self, "btn_refresh_ip"):
-            self.btn_refresh_ip.setStyleSheet(
-                """
-                QPushButton {
-                    background-color: #2d2d2d;
-                    border: 1px solid #444;
-                    border-radius: 4px;
-                    padding: 2px;
-                }
-                QPushButton:hover {
-                    background-color: #3a3a3a;
-                    border: 1px solid #555;
-                }
-            """
-            )
-
-        if not initial:
-            QMessageBox.information(
-                self,
-                "Style Applied",
-                f"Application style applied. Log output font size: {log_font_size}pt.",
-            )
-
-    def _get_style_sheet(self, base_font_size, log_font_size):
-        def p(key: str, default: str) -> str:
-            if current_theme and current_theme.palette:
-                return current_theme.palette.get(key, default)
-            return default
-
-        bg = p("background", "#1e1e1e")
-        fg = p("foreground", "#dcdcdc")
-        group_border = p("group_border", "#3c3c3c")
-        group_title = p("group_title", "#aaa")
-        group_bg = p("group_bg", "transparent")
-        sidebar_bg = p("sidebar_bg", "#252525")
-        sidebar_border = p("sidebar_border", "#3c3c3c")
-        input_bg = p("input_bg", "#2d2d2d")
-        input_border = p("input_border", "#444")
-        input_fg = p("input_fg", "#e0e0e0")
-        btn_bg = p("button_bg", "#2f4f6f")
-        btn_border = p("button_border", "#3a5f80")
-        btn_fg = p("button_fg", "#ffffff")
-        btn_bg_hover = p("button_hover_bg", "#3a668a")
-        btn_bg_pressed = p("button_pressed_bg", "#2a5975")
-        btn_disabled_bg = p("button_disabled_bg", "#222")
-        btn_disabled_fg = p("button_disabled_fg", "#555")
-        btn_disabled_border = p("button_disabled_border", "#333")
-        tab_pane_border = p("tab_pane_border", "#3c3c3c")
-        tab_pane_bg = p("tab_pane_bg", "#1e1e1e")
-        tab_bg = p("tab_bg", "#2a2a2a")
-        tab_fg = p("tab_fg", "#dcdcdc")
-        tab_selected_bg = p("tab_selected_bg", "#2f4f6f")
-        tab_selected_border = p("tab_selected_border", "#3a5f80")
-        tab_selected_fg = p("tab_selected_fg", "#ffffff")
-        tab_hover_bg = p("tab_hover_bg", "#3a3a3a")
-        log_bg = p("log_bg", "#111")
-        log_border = p("log_border", "#333")
-        log_text = p("log_text", "#c0c0c0")
-        log_font = p("log_font_family", "Consolas, Monospace")
-# THE FIX: Define the status bar colors
-        status_bg = p("status_bar_bg", "#252525")
-        status_border = p("status_bar_border", "#3c3c3c")
-        return f"""
-QWidget {{
-    background-color: {bg};
-    color: {fg};
-    font-family: 'Segoe UI', sans-serif;
-    font-size: {base_font_size}pt;
-    border-radius: 10px;
-}}
-
-QGroupBox {{
-    border: 1px solid {group_border};
-    border-radius: 10px;
-    margin-top: 20px;
-    font-weight: bold;
-    background-color: {group_bg};
-}}
-
-QGroupBox::title {{
-    subcontrol-origin: margin;
-    left: 10px;
-    padding: 0 6px;
-    color: {group_title};
-}}
-
-#sidebar {{
-    background-color: {sidebar_bg};
-    border: 1px solid {sidebar_border};
-    border-radius: 12px;
-    padding: 12px;
-}}
-
-QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QListWidget, QComboBox {{
-    padding: 6px 8px;
-    border-radius: 8px;
-    background-color: {input_bg};
-    border: 1px solid {input_border};
-    color: {input_fg};
-}}
-
-QListWidget::item {{
-    border-radius: 6px;
-    padding: 4px;
-}}
-
-QListWidget::item:selected {{
-    background: {tab_selected_bg};
-    border-radius: 6px;
-}}
-
-QPushButton {{
-    background-color: {btn_bg};
-    border: 1px solid {btn_border};
-    padding: 8px 12px;
-    border-radius: 10px;
-    color: {btn_fg};
-}}
-
-QPushButton:hover {{
-    background-color: {btn_bg_hover};
-}}
-
-QPushButton:pressed {{
-    background-color: {btn_bg_pressed};
-}}
-
-QPushButton:disabled {{
-    background-color: {btn_disabled_bg};
-    color: {btn_disabled_fg};
-    border: 1px solid {btn_disabled_border};
-}}
-
-QTabWidget::pane {{
-    border: 1px solid {tab_pane_border};
-    border-radius: 12px;
-    background: {tab_pane_bg};
-    top: 6px;              /* move pane down so all tab buttons sit higher */
-}}
-
-QTabBar::tab {{
-    padding: 8px 18px;
-    background: {tab_bg};
-    color: {tab_fg};
-    border: 1px solid {tab_pane_border};
-    border-bottom: none;
-    border-radius: 10px 10px 0 0;
-    margin-right: 4px;
-}}
-
-QTabBar::tab:selected {{
-    background: {tab_selected_bg};
-    border-color: {tab_selected_border};
-    color: {tab_selected_fg};
-}}
-
-QTabBar::tab:hover {{
-    background: {tab_hover_bg};
-}}
-
-QScrollArea {{
-    border-radius: 12px;
-    border: 1px solid {sidebar_border};
-}}
-
-QScrollBar:vertical, QScrollBar:horizontal {{
-    background: transparent;
-    border-radius: 6px;
-    margin: 2px;
-}}
-
-QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{
-    background: {btn_bg_hover};
-    border-radius: 6px;
-}}
-
-QMenu {{
-    background: {group_bg};
-    border-radius: 10px;
-    padding: 5px;
-}}
-
-QMenu::item {{
-    padding: 6px 10px;
-    border-radius: 6px;
-}}
-
-QMenu::item:selected {{
-    background: {tab_selected_bg};
-    color: {tab_selected_fg};
-}}
-
-QTextEdit#logOutput, QPlainTextEdit#logOutput {{
-    background-color: {log_bg};
-    border: 1px solid {log_border};
-    border-radius: 12px;
-    padding: 10px;
-    color: {log_text};
-    font-family: {log_font};
-    font-size: {log_font_size}pt;
-}}
-
-#statusBarFrame {{
-    background-color: {status_bg};
-    border: 1px solid {status_border};
-    border-radius: 12px; /* Consistent with sidebar and tabs */
-    margin-top: 5px;
-}}
-
-
-/* Add style for the icon button to ensure it's flat and inherits styles */
-#statusBarFrame QPushButton {{
-    background-color: transparent; /* Don't want a full background box */
-    border: none;
-    padding: 0;
-}}
-
-#statusBarFrame QPushButton:hover {{
-    background-color: {btn_bg_hover};
-    border: none;
-}}
-
-#statusBarFrame QPushButton:pressed {{
-    background-color: {btn_bg_pressed};
-    border: none;
-}}
-
-#statusBarFrame QLabel {{
-    background-color: transparent;
-    padding: 0;
-    margin: 0;
-}}
+        """Applies the style sheet to the entire QApplication instance."""
+        global current_theme
         
-
-        """
-
+        if not current_theme: 
+            print("Warning: Attempted to apply style, but no theme is currently loaded.")
+            return
+        
+        # Get necessary font sizes from settings for QSS generation
+        base_font_size = settings.get("base_font_size", 10) 
+        log_font_size = settings.get("log_font_size", 13)
+        
+        # Generate the complete QSS including background
+        qss_content = self._get_style_sheet(base_font_size, log_font_size)
+        
+        if qss_content:
+            # Apply the style to the global QApplication instance
+            QApplication.instance().setStyleSheet(qss_content)
+            print(f"Style applied successfully from theme '{current_theme.name}'")
+        else:
+            print("Warning: No QSS content generated")
 
     # ------------------------------
     # Sidebar
@@ -1550,12 +1695,7 @@ QTextEdit#logOutput, QPlainTextEdit#logOutput {{
         run_exec_layout.addWidget(self.appid_entry)
 
         self.btn_upload_launch = QPushButton("Upload and Launch")
-        # Button color from theme (fallback to original)
-        primary_bg = self.theme_color("button_primary_bg", "#2f4f6f")
-        primary_fg = self.theme_color("button_primary_fg", "#ffffff")
-        self.btn_upload_launch.setStyleSheet(
-            f"background-color: {primary_bg}; color: {primary_fg};"
-        )
+        self.btn_upload_launch.setObjectName("btnUploadLaunch") # ID for styling
         self.btn_upload_launch.clicked.connect(self.upload_and_launch)
         run_exec_layout.addWidget(self.btn_upload_launch)
 
@@ -1696,15 +1836,11 @@ QTextEdit#logOutput, QPlainTextEdit#logOutput {{
 
     # ------------------------------
     # Status bar / local IP
-    # ------------------------------
-# ... inside VitaDeckModern class ...
-    
+    # ------------------------------ 
     def setup_local_ip_status(self, layout):
         inactive = self.theme_color("status_inactive", "#777")
-
         self.local_ip_dot = ColorDot(inactive, size=12)
         layout.addWidget(self.local_ip_dot)
-
         self.local_ip_label = QLabel("Local IP: N/A")
         self.local_ip_label.setStyleSheet(f"color: {inactive};")
         layout.addWidget(self.local_ip_label)
@@ -1720,8 +1856,6 @@ QTextEdit#logOutput, QPlainTextEdit#logOutput {{
             lambda: self.update_local_ip_status(initial=False, force_refresh=True)
         )
         layout.addWidget(self.btn_refresh_ip)
-
-    # ...
 
     def _apply_final_ip_status(self):
         self._local_ip_cache = self.get_local_ip()
