@@ -141,7 +141,7 @@ class BatteryWidget(QWidget):
         # Logic per requirements
         if is_charging:
             icon_name = "alt-charge-battery.svg"
-            color = "#00FF00" # Green
+            color = "#3ecf4c"# Green
         else:
             if level < 20:
                 icon_name = "alt-battery-1.svg"
