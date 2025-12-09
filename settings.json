@@ -14,7 +14,7 @@
             "exec_path": "/home/mint/Desktop/rinnetutorial/ncsj/build/eboot.bin",
             "target_app_id": "NCSJROCRO",
             "base_font_size": 10,
-            "theme_name": "default"
+            "theme_name": "boxy"
         }
     }
 }
