@@ -10,7 +10,8 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QLineEdit, QTabWidget,
     QGroupBox, QMessageBox, QFrame, QFileDialog, QStyle,
     QTextEdit, QSpinBox, QListWidget, QListWidgetItem,
-    QInputDialog, QComboBox
+    QInputDialog, QComboBox,
+    QSlider
 )
 from PySide6.QtGui import QColor, QPainter, QFont, QIntValidator, QIcon, QPixmap
 from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer, QSize, QByteArray
@@ -455,6 +456,7 @@ except ImportError as e:
                 "vita_port": 1337,
                 "base_font_size": 10,
                 "theme_name": "default",
+                "window_opacity": 1.0,
             },
         }
         _current_workspace_name = DEFAULT_WORKSPACE_NAME
@@ -846,7 +848,7 @@ class SettingsTab(QWidget):
     restart_log_server_signal = Signal(int)
     apply_style_signal = Signal()
     theme_changed = Signal(str)
-
+    opacity_changed = Signal(float)
     def __init__(self):
         super().__init__()
         layout = QVBoxLayout(self)
@@ -919,7 +921,34 @@ class SettingsTab(QWidget):
         lay_appearance.addLayout(hbox_font)
 
         layout.addWidget(grp_appearance)
-
+# ADDED: Window Appearance Group (Opacity Slider)
+        grp_window = QGroupBox("Window Appearance")
+        lay_window = QVBoxLayout(grp_window)
+        
+        lay_window.addWidget(QLabel("Window Opacity:"))
+        
+        # Opacity Slider (QSlider must be imported, which it is in snippet 1)
+        self.opacity_slider = QSlider(Qt.Horizontal)
+        self.opacity_slider.setRange(10, 100) # 10% to 100%
+        self.opacity_slider.setSingleStep(1)
+        self.opacity_slider.setPageStep(10)
+        self.opacity_slider.setTickInterval(10)
+        self.opacity_slider.setTickPosition(QSlider.TicksBelow)
+        
+        hbox_opacity = QHBoxLayout()
+        # Use a single label to display the current percentage
+        self.opacity_label = QLabel("100%") 
+        hbox_opacity.addWidget(QLabel("10%"))
+        hbox_opacity.addWidget(self.opacity_slider)
+        hbox_opacity.addWidget(QLabel("100%"))
+        
+        lay_window.addLayout(hbox_opacity)
+        lay_window.addWidget(self.opacity_label, alignment=Qt.AlignCenter)
+        
+        self.opacity_slider.valueChanged.connect(self.on_opacity_changed)
+        
+        layout.addWidget(grp_window)
+        
         # Theme selection
         grp_theme = QGroupBox("Theme")
         lay_theme = QVBoxLayout(grp_theme)
@@ -971,24 +1000,47 @@ class SettingsTab(QWidget):
         if d:
             line_edit.setText(d)
             settings.set(setting_key, d)
-
+    @Slot(int)
+    def on_opacity_changed(self, value):
+        """Handle opacity slider change, save to settings, and emit signal."""
+        # Update the display label
+        self.opacity_label.setText(f"{value}%")
+        
+        # Calculate float opacity (0.1 to 1.0)
+        float_opacity = value / 100.0
+        
+        # Save to workspace settings
+        settings.set("window_opacity", float_opacity)
+        
+        # Emit signal to main window to apply the change immediately
+        self.opacity_changed.emit(float_opacity)
     def set_settings_values(self):
         self.sdk_input.setText(settings.get("sdk_path", ""))
         self.build_input.setText(settings.get("last_build_dir", os.getcwd()))
-
         current_port = settings.get("log_port", 8080)
         self.log_port_input.blockSignals(True)
         self.log_port_input.setText(str(current_port))
         self.log_port_input.blockSignals(False)
-
         self.font_size_spinbox.setValue(settings.get("log_font_size", 13))
-
         theme_name = settings.get("theme_name", "default")
         idx = self.theme_combo.findText(theme_name)
         if idx != -1:
             self.theme_combo.blockSignals(True)
             self.theme_combo.setCurrentIndex(idx)
             self.theme_combo.blockSignals(False)
+            
+        # ADDED: Initialize opacity slider
+        # Get opacity (float 0.1 to 1.0), convert to int (10 to 100)
+        current_opacity = settings.get("window_opacity", 1.0)
+        slider_value = int(current_opacity * 100)
+        
+        self.opacity_slider.blockSignals(True)
+        self.opacity_slider.setValue(slider_value)
+        self.opacity_slider.blockSignals(False)
+    
+        # Initialize label text
+        self.opacity_label.setText(f"{slider_value}%")
+        self.on_opacity_changed(slider_value)
 
     def apply_port_and_restart(self):
         try:
@@ -1244,7 +1296,8 @@ class VitaDeckModern(QWidget):
         self.tab_settings.apply_style_signal.connect(self.apply_style)
         self.tab_settings.theme_changed.connect(self.change_theme)
         self.idx_settings = self.tabs.addTab(self.tab_settings, "Settings")
-
+        self.tab_settings.opacity_changed.connect(self.set_window_opacity)
+        self.idx_settings = self.tabs.addTab(self.tab_settings, "Settings")
         # Right-aligned SVG icon buttons in corner of the tab bar
         self.setup_tab_icons()
 
@@ -1265,11 +1318,12 @@ class VitaDeckModern(QWidget):
 
         # NOW apply workspace settings and theme AFTER all widgets exist
         self.apply_workspace_settings(initial=True)
+        #self.set_window_opacity()
         self._apply_tab_icons_from_theme()
 
         # Apply theme opacity and background AFTER window is fully constructed
         if current_theme:
-            self.setWindowOpacity(current_theme.opacity)
+            #self.setWindowOpacity(current_theme.opacity)
             self._apply_background_settings()
 
         if type(settings).__name__ == "MockSettings":
@@ -1278,6 +1332,20 @@ class VitaDeckModern(QWidget):
                 "Warning",
                 "Running in MOCK mode. Some features may not work as expected because external modules are missing.",
             )
+        self.set_window_opacity() #
+        
+    @Slot(float)
+    def set_window_opacity(self, opacity: float = None):
+        """Applies the current workspace opacity setting to the window."""
+        if opacity is None:
+            # Load from settings if not passed (e.g., when loading a workspace)
+            opacity = settings.get("window_opacity", 1.0)
+
+        # Clamp value between 0.0 and 1.0
+        opacity = max(0.0, min(1.0, opacity))
+        
+        # Apply the opacity to the main window
+        self.setWindowOpacity(opacity)
 
     # ---- themed icon helpers ----
     def _get_themed_icon(self, key: str, fallback_svg: str, size: int = 20) -> QIcon:
@@ -1376,7 +1444,7 @@ class VitaDeckModern(QWidget):
         self.update_local_ip_status(initial=initial)
 
         self.tab_workspace.refresh_list()
-
+        #self.set_window_opacity()
         theme_name = settings.get("theme_name", "default")
         self.change_theme(theme_name, from_workspace=True)
 
@@ -1394,7 +1462,8 @@ class VitaDeckModern(QWidget):
         
         # 2. Re-apply styles (Colors, Fonts)
         self.apply_style(initial=False)
-
+# ADDED: Re-apply workspace opacity to override any theme default
+        self.set_window_opacity()
         # 3. APPLY BACKGROUND IMAGE, OPACITY, AND ASPECT RATIO SETTINGS
         self._apply_background_settings() # <--- NEW CALL
         
@@ -1578,6 +1647,13 @@ class VitaDeckModern(QWidget):
 
     @Slot()
     def apply_style(self, initial=False):
+        #self.setStyleSheet(self.theme.get_stylesheet())
+        
+        # Re-apply workspace settings to override theme if necessary (e.g., font size)
+        #self.apply_workspace_settings(initial=False)
+        
+        # ADDED: Explicitly apply window opacity after all stylesheet/style changes
+        self.set_window_opacity()
         """Applies the style sheet to the entire QApplication instance."""
         global current_theme
         
