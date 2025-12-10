@@ -21,6 +21,7 @@ class MockSettings:
             "vita_port": 1337,
             "base_font_size": 10,
             "theme_name": "default",
+            "window_opacity": 1.0,
         },
     }
     _current_workspace_name = DEFAULT_WORKSPACE_NAME
