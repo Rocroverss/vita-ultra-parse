@@ -17,20 +17,12 @@ from PySide6.QtGui import QColor, QPainter, QFont, QIntValidator, QIcon, QPixmap
 from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer, QSize, QByteArray
 from PySide6.QtSvg import QSvgRenderer
 from pathlib import Path
+
 # ==========================================
 # THEME SYSTEM (icons + palette from THEMES/<theme>/theme.txt)
 # ==========================================
 
 THEMES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "THEMES")
-
-# ==========================================
-# SVG CONSTANTS & UTILITY (fallback icons)
-# ==========================================
-
-THEME_DIR = Path("THEMES") / "default"
-
-from pathlib import Path
-
 THEME_DIR = Path("THEMES") / "default"
 
 def load_svg(filename: str, fallback: str) -> str:
@@ -122,8 +114,6 @@ class BatteryWidget(QWidget):
 
     def update_theme_path(self, new_path):
         self.theme_path = new_path
-        # Force refresh with last known values if we had storage, 
-        # for now just reset or wait for next update
 
     def update_battery(self, level: int, is_charging: bool = False, connected: bool = True):
         """
@@ -323,7 +313,7 @@ current_theme: Optional[Theme] = None
 
 from pathlib import Path
 import os
-# ... (other imports) ...
+
 
 def load_theme(theme_name: str, base_dir: Optional[Path] = None) -> Optional["Theme"]:
     global THEMES_DIR, current_theme
@@ -1182,13 +1172,7 @@ class VitaDeckModern(QWidget):
             img_path = Path(current_theme.base_dir) / img_path_str
             
             if img_path.exists():
-                # ... rest of the QSS logic remains the same ...
-                # If you applied the style sheet to the app object, you should use app.setStyleSheet()
-                # If you applied it to the main window, use self.setStyleSheet()
-                
-                # Example for QWidget background:
                 img_url = img_path.as_uri()
-                # ... determine bg_repeat, bg_size, bg_position ...
                 
                 qss = f"""
                 VitaDeckModern {{
@@ -1196,7 +1180,7 @@ class VitaDeckModern(QWidget):
                     /* ... other background properties ... */
                 }}
                 """
-                # Apply the style sheet (assuming self refers to VitaDeckModern)
+
                 self.setStyleSheet(self.styleSheet() + qss) 
             else:
                 print(f"Warning: Background image not found at {img_path}")
@@ -1459,21 +1443,16 @@ class VitaDeckModern(QWidget):
     def change_theme(self, theme_name: str, from_workspace: bool = False):
         # 1. Load the theme data (Settings the global current_theme)
         load_theme(theme_name)
-        
         # 2. Re-apply styles (Colors, Fonts)
         self.apply_style(initial=False)
-# ADDED: Re-apply workspace opacity to override any theme default
         self.set_window_opacity()
         # 3. APPLY BACKGROUND IMAGE, OPACITY, AND ASPECT RATIO SETTINGS
-        self._apply_background_settings() # <--- NEW CALL
-        
+        self._apply_background_settings() 
         # 3. Re-build the corner icons using the new theme paths AND RE-ASSIGN THEM
-        self.setup_tab_icons() # <-- This is the key call
-        
+        self.setup_tab_icons()
         # 4. Update specific icons that aren't in the corner
         if hasattr(self, "btn_refresh_ip"):
             self.btn_refresh_ip.setIcon(self._get_refresh_icon())
-        
         # 5. Update Battery Widget
         if hasattr(self, 'battery_widget') and current_theme:
             self.battery_widget.update_theme_path(current_theme.base_dir)
@@ -1512,10 +1491,6 @@ class VitaDeckModern(QWidget):
         # 3. Inform dependent widgets (like the BatteryWidget) to update their paths
         if current_theme:
             self.battery_widget.update_theme_path(current_theme.base_dir)
-
-
-
-    # Replace the _get_style_sheet method in VitaDeckModern class
 
     def _get_style_sheet(self, base_font_size: int, log_font_size: int) -> str:
         """Generates the full QSS string, including background image rules."""
@@ -1611,9 +1586,6 @@ class VitaDeckModern(QWidget):
         
         return "\n".join(qss_parts)
 
-
-    # Replace the _get_background_uri method in VitaDeckModern class
-
     def _get_background_uri(self) -> Optional[str]:
         """Resolves the background image path to a QSS-compatible file URI."""
         global current_theme
@@ -1633,26 +1605,13 @@ class VitaDeckModern(QWidget):
             print(f"Warning: Background image not found at {image_path}")
             return None
         
-        # Convert to absolute URI with proper forward slashes
-        # Use as_posix() to ensure forward slashes on all platforms
         abs_path = image_path.resolve().as_posix()
-        
-        # Return properly formatted file URI for QSS
         return f"url('file:///{abs_path}')"
-
-
-    # Replace the _apply_background_settings method in VitaDeckModern class
-
-    # Replace the apply_style method in VitaDeckModern class
 
     @Slot()
     def apply_style(self, initial=False):
         #self.setStyleSheet(self.theme.get_stylesheet())
-        
-        # Re-apply workspace settings to override theme if necessary (e.g., font size)
         #self.apply_workspace_settings(initial=False)
-        
-        # ADDED: Explicitly apply window opacity after all stylesheet/style changes
         self.set_window_opacity()
         """Applies the style sheet to the entire QApplication instance."""
         global current_theme
@@ -1660,11 +1619,9 @@ class VitaDeckModern(QWidget):
         if not current_theme: 
             print("Warning: Attempted to apply style, but no theme is currently loaded.")
             return
-        
         # Get necessary font sizes from settings for QSS generation
         base_font_size = settings.get("base_font_size", 10) 
         log_font_size = settings.get("log_font_size", 13)
-        
         # Generate the complete QSS including background
         qss_content = self._get_style_sheet(base_font_size, log_font_size)
         
@@ -1788,6 +1745,10 @@ class VitaDeckModern(QWidget):
         btn_reboot = QPushButton("Reboot Console")
         btn_reboot.clicked.connect(lambda: self.send_command("reboot"))
         quick_layout.addWidget(btn_reboot)
+        
+        btn_screenshot = QPushButton("Take screenshot")
+        btn_screenshot.clicked.connect(lambda: self.send_command("screenshot"))
+        quick_layout.addWidget(btn_screenshot)
 
         hbox_screen = QHBoxLayout()
         btn_screen_on = QPushButton("Screen ON")
@@ -1983,58 +1944,36 @@ class VitaDeckModern(QWidget):
             QTimer.singleShot(500, self._apply_final_ip_status)
         else:
             self._apply_final_ip_status()
-
-# ... inside VitaDeckModern class ...
-    
+   
     def setup_status_bar(self, layout):
-        # 1. Create a QFrame to act as the rounded container for the status bar
         self.status_frame = QFrame()
         self.status_frame.setObjectName("statusBarFrame") 
-        # Apply style sheet for rounded corners and border in _get_style_sheet
-        
         status_bar_layout = QHBoxLayout(self.status_frame)
-        status_bar_layout.setContentsMargins(12, 8, 12, 8) # Add vertical padding
-
+        status_bar_layout.setContentsMargins(12, 8, 12, 8) 
         inactive = self.theme_color("status_inactive", "#777")
-        
-        # --- 1. Battery Widget (Left-most) ---
         theme_path = os.path.join(THEMES_DIR, settings.get("theme_name", "default"))
         self.battery_widget = BatteryWidget(theme_path)
         status_bar_layout.addWidget(self.battery_widget)
-        # Connect battery signal
         self.cmd_thread.battery_signal.connect(self.battery_widget.update_battery)
-        
         status_bar_layout.addSpacing(20)
-
-        # --- 2. Connection Status (Dot + Label) ---
         self.conn_dot = ColorDot(inactive, size=12)
         status_bar_layout.addWidget(self.conn_dot)
         self.conn_label = QLabel("Not connected")
         self.conn_label.setStyleSheet(f"color: {inactive};")
         status_bar_layout.addWidget(self.conn_label)
-
         status_bar_layout.addSpacing(20)
-
-        # --- 3. Transfer Status (Dot + Label) ---
         self.transfer_dot = ColorDot(inactive, size=12)
         status_bar_layout.addWidget(self.transfer_dot)
-        self.transfer_label = QLabel("File transfer idle") # Changed default text
+        self.transfer_label = QLabel("File transfer idle")
         self.transfer_label.setStyleSheet(f"color: {inactive};")
         status_bar_layout.addWidget(self.transfer_label)
-
         status_bar_layout.addStretch()
-        
-        # --- 4. Local IP Status (Right-most) ---
         self.setup_local_ip_status(status_bar_layout)
-        
-        # Add the frame to the main window layout
         layout.addWidget(self.status_frame)
 
-    # ...
 
     @Slot(str, str)
     def update_connection_status(self, message, color):
-        # color string comes from FTP thread; we use it directly
         self.conn_label.setStyleSheet(f"color: {color};")
         self.conn_label.setText(message)
         self.conn_dot.set_color(color)
