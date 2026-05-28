@@ -174,7 +174,8 @@ Future planned features include:
 - Razor capture management
 - Profiling tools
 - Performance analysis
-
+- Android analysis
+  
 ---
 
 ## 6. Custom Components
