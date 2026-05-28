@@ -401,5 +401,5 @@ Replace the following values:
 - Me myself, Rocroverss :)
 - [gl33ntwine](https://github.com/v-atamanenko) for the original idea.
 - [Paddel06](https://github.com/Paddel06) and [Rinnegatamante](https://github.com/Rinnegatamante)  for the renommendation of commads.
-- [isage](https://github.com/isage/catlog) for the carlog plugin.
+- [isage](https://github.com/isage/catlog) for the catlog plugin.
 
