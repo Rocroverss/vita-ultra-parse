@@ -32,7 +32,7 @@ The project was inspired by an idea shared on the Vita Nuova Discord by develope
    4. [Initial Application Setup](#74-initial-application-setup)
    5. [Generate an ELF File for Crash Parsing](#75-generate-an-elf-file-for-crash-parsing)
 8. [Platform Notes](#8-platform-notes)
-9. [Useful Links](#9-useful-links)
+9. [Credits](#9-Credits)
 
 ---
 
@@ -395,9 +395,10 @@ Replace the following values:
 
 ---
 
-## 9. Useful Links
+## 9. Credits
 
-- [v-atamanenko GitHub](https://github.com/v-atamanenko)
-- [catlog repository](https://github.com/isage/catlog)
-- [VitaCompanion-VitaDeck repository](https://github.com/Rocroverss/vitacompanion-vitadeck)
-- [VitaCompanion-VitaDeck releases](https://github.com/Rocroverss/vitacompanion-vitadeck/releases)
+- Me myself, Rocroverss :)
+- [gl33ntwine](https://github.com/v-atamanenko) for the original idea.
+- [Paddel06](https://github.com/Paddel06) and [Rinnegatamante](https://github.com/Rinnegatamante)  for the renommendation of commads.
+- [isage](https://github.com/isage/catlog) for the carlog plugin.
+
