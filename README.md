@@ -2,9 +2,7 @@
 
 A development utility suite for the **PS Vita**, built to help with logging, crash parsing, screenshots, FTP transfer, project builds, and common console commands.
 
-The project was inspired by an idea shared on the Vita Nuova Discord by developer **gl33ntwine**.
-
-- Original inspiration: [v-atamanenko GitHub](https://github.com/v-atamanenko)
+The project was inspired by an idea shared on the Vita Nuova Discord by developer **gl33ntwine** you can find his github [here](https://github.com/v-atamanenko)
 
 ![Original idea](IMG/vitadeck.png)
 
@@ -279,13 +277,7 @@ Before starting, make sure you have:
 
 #### 7.2.1 Install CatLog
 
-Install and configure `catlog` so the PS Vita can send logs to the server.
-
-Repository:
-
-```text
-https://github.com/isage/catlog
-```
+Install and configure `catlog` so the PS Vita can send logs to the server. Repository can be found [here](https://github.com/isage/catlog).
 
 Make sure both the PS Vita and the server use the same IP address and port configuration.
 
@@ -294,18 +286,8 @@ Make sure both the PS Vita and the server use the same IP address and port confi
 #### 7.2.2 Install VitaCompanion-VitaDeck
 
 VitaDeck requires the modified VitaCompanion plugin fork with screenshot and battery command support.
-
-Repository:
-
-```text
-https://github.com/Rocroverss/vitacompanion-vitadeck
-```
-
-Releases:
-
-```text
-https://github.com/Rocroverss/vitacompanion-vitadeck/releases
-```
+Repository can be found [here](https://github.com/Rocroverss/vitacompanion-vitadeck).
+Just install thew release [vitacompanion.suprx](https://github.com/Rocroverss/vitacompanion-vitadeck/releases)
 
 #### Installation Steps
 
