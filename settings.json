@@ -773,14 +773,14 @@
                 "help": true,
                 "logging": true,
                 "core_dump": true,
-                "razor": true,
-                "profiling": true,
-                "android": true,
+                "razor": false,
+                "profiling": false,
+                "android": false,
                 "screenshots": true,
                 "build": true,
                 "sdk": true,
                 "file_transfer": true,
-                "example1": true
+                "example1": false
             },
             "component_order": [
                 "workspace",
