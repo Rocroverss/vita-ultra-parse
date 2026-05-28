@@ -1,0 +1,183 @@
+# ===== THEME BACKGROUND =====
+# Path is relative to the current theme directory (e.g., 'THEMES/mytheme/')
+# Set to 'none' or leave blank to disable the image.
+image_location = background.jpg 
+
+# Opacity of the main window (0.0 to 1.0). 1.0 is fully opaque.
+# Note: Some OS/Window Managers might not fully respect this.
+opacity = 0.95
+
+# Aspect ratio mode for the background image:
+# 'scale' (stretches to fill window), 
+# 'keep' (maintains aspect ratio, might have bars), 
+# 'none' (original size/no image)
+aspect_ratio_mode = keep
+
+# ===== THEME VARIABLES =====
+
+background = #0f1f16
+foreground = #d8ffe8
+
+group_border = #2e6a4f
+group_title = #8fffcf
+group_bg = transparent
+
+sidebar_bg = #13281d
+sidebar_border = #2e6a4f
+
+input_bg = #173226
+input_border = #2e6a4f
+input_fg = #d8ffe8
+
+button_bg = #1f7a55
+button_border = #2fa372
+button_fg = #ecfff8
+button_hover_bg = #27a06e
+button_pressed_bg = #176145
+button_disabled_bg = #0c2620
+button_disabled_fg = #3f7a63
+button_disabled_border = #1b4f3f
+
+tab_pane_border = #2e6a4f
+tab_pane_bg = #0f1f16
+tab_bg = #153527
+tab_fg = #d8ffe8
+tab_selected_bg = #1f7a55
+tab_selected_border = #2fa372
+tab_selected_fg = #ecfff8
+tab_hover_bg = #1e4f3a
+
+log_bg = #091510
+log_border = #2e6a4f
+log_text = #a6ffd9
+log_font_family = Consolas, Monospace
+
+status_bar_bg = #13281d
+status_bar_border = #2e6a4f
+
+# ===== QSS START =====
+
+QWidget {{
+    background-color: {background};
+    color: {foreground};
+    font-family: 'Segoe UI', sans-serif;
+    font-size: {base_font_size}pt;
+    border-radius: 10px;
+}}
+
+QGroupBox {{
+    border: 1px solid {group_border};
+    border-radius: 10px;
+    margin-top: 20px;
+    font-weight: bold;
+    background-color: {group_bg};
+}}
+
+QGroupBox::title {{
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 6px;
+    color: {group_title};
+}}
+
+#sidebar {{
+    background-color: {sidebar_bg};
+    border: 1px solid {sidebar_border};
+    border-radius: 12px;
+    padding: 12px;
+}}
+
+QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QListWidget, QComboBox {{
+    padding: 6px 8px;
+    border-radius: 8px;
+    background-color: {input_bg};
+    border: 1px solid {input_border};
+    color: {input_fg};
+}}
+
+QPushButton {{
+    background-color: {button_bg};
+    border: 1px solid {button_border};
+    padding: 8px 12px;
+    border-radius: 10px;
+    color: {button_fg};
+}}
+
+QPushButton:hover {{
+    background-color: {button_hover_bg};
+}}
+
+QPushButton:pressed {{
+    background-color: {button_pressed_bg};
+}}
+
+QPushButton:disabled {{
+    background-color: {button_disabled_bg};
+    color: {button_disabled_fg};
+    border: 1px solid {button_disabled_border};
+}}
+
+QTabWidget::pane {{
+    border: 1px solid {tab_pane_border};
+    border-radius: 12px;
+    background: {tab_pane_bg};
+    top: 6px;
+}}
+
+QTabBar::tab {{
+    padding: 8px 18px;
+    background: {tab_bg};
+    color: {tab_fg};
+    border: 1px solid {tab_pane_border};
+    border-bottom: none;
+    border-radius: 10px 10px 0 0;
+    margin-right: 4px;
+}}
+
+QTabBar::tab:selected {{
+    background: {tab_selected_bg};
+    border-color: {tab_selected_border};
+    color: {tab_selected_fg};
+}}
+
+QTabBar::tab:hover {{
+    background: {tab_hover_bg};
+}}
+
+QTextEdit#logOutput, QPlainTextEdit#logOutput {{
+    background-color: {log_bg};
+    border: 1px solid {log_border};
+    border-radius: 12px;
+    padding: 10px;
+    color: {log_text};
+    font-family: {log_font_family};
+    font-size: {log_font_size}pt;
+}}
+
+#statusBarFrame {{
+    background-color: {status_bar_bg};
+    border: 1px solid {status_bar_border};
+    border-radius: 12px;
+    margin-top: 5px;
+}}
+
+#statusBarFrame QPushButton {{
+    background-color: transparent;
+    border: none;
+    padding: 0;
+}}
+
+#statusBarFrame QPushButton:hover {{
+    background-color: {button_hover_bg};
+}}
+
+#statusBarFrame QPushButton:pressed {{
+    background-color: {button_pressed_bg};
+}}
+
+#statusBarFrame QLabel {{
+    background-color: transparent;
+    padding: 0;
+    margin: 0;
+}}
+

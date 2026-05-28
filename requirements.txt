@@ -1,0 +1,4 @@
+capstone>=5.0.0        # Disassembly framework
+pyelftools>=0.29       # ELF parsing
+cxxfilt>=0.3.0         # Optional: C++ symbol demangling
+PySide6>=6.0.0
