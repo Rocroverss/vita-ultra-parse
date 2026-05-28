@@ -1,176 +1,215 @@
-# Vita Ultra Parse
+# Vita Ultra Parse / VitaDeck
 
-A development utility suite for the **PS Vita**, inspired by a screenshot shared on the Vita Nuova Discord by the talented developer gl33ntwine:
-[v-atamanenko GitHub](https://github.com/v-atamanenko)
+A development utility suite for the **PS Vita**, built to help with logging, crash parsing, screenshots, FTP transfer, project builds, and common console commands.
+
+The project was inspired by an idea shared on the Vita Nuova Discord by developer **gl33ntwine**.
+
+- Original inspiration: [v-atamanenko GitHub](https://github.com/v-atamanenko)
 
 ![Original idea](IMG/vitadeck.png)
 
-> [!WARNING]
-> This application was developed in Python and is still evolving.
-> Feel free to modify it, extend it, and add your own modules.
->
-> AI tools were used to help reorganize parts of the codebase after the application became functional. While the project is working, unexpected bugs or edge cases may still exist.
+---
+
+## Table of Contents
+
+1. [Project Overview](#1-project-overview)
+2. [Important Notice](#2-important-notice)
+3. [VitaDeck Interface](#3-vitadeck-interface)
+4. [Features](#4-features)
+   1. [Configuration System](#41-configuration-system)
+   2. [Bottom Status Bar](#42-bottom-status-bar)
+   3. [Quick Commands](#43-quick-commands)
+5. [Components](#5-components)
+   1. [Working Components](#51-working-components)
+   2. [In Progress](#52-in-progress)
+   3. [Planned Features](#53-planned-features)
+6. [Custom Components](#6-custom-components)
+   1. [Where to Place Custom Components](#61-where-to-place-custom-components)
+   2. [Minimal Component Examples](#62-minimal-component-examples)
+   3. [Supported Optional Arguments](#63-supported-optional-arguments)
+7. [Setup Guide](#7-setup-guide)
+   1. [Requirements](#71-requirements)
+   2. [Prepare Your PS Vita](#72-prepare-your-ps-vita)
+   3. [Prepare Your PC Workspace](#73-prepare-your-pc-workspace)
+   4. [Initial Application Setup](#74-initial-application-setup)
+   5. [Generate an ELF File for Crash Parsing](#75-generate-an-elf-file-for-crash-parsing)
+8. [Platform Notes](#8-platform-notes)
+9. [Useful Links](#9-useful-links)
 
 ---
 
-# VITADECK
+## 1. Project Overview
+
+**Vita Ultra Parse** is a Python-based development toolkit for PS Vita development workflows.
+
+The main application, **VitaDeck**, provides a desktop interface for common development tasks such as:
+
+- Reading PS Vita logs on your PC
+- Capturing screenshots from the console
+- Sending files over FTP
+- Managing workspaces and build directories
+- Running quick console commands
+- Retrieving crash dumps
+- Performing core dump and crash analysis
+
+---
+
+## 2. Important Notice
+
+> [!WARNING]
+> This application is still evolving.
+>
+> It was developed in Python and may contain unexpected bugs or edge cases.
+>
+> You are encouraged to modify it, extend it, and add your own modules.
+>
+> AI tools were used to help reorganize parts of the codebase after the application became functional.
+
+---
+
+## 3. VitaDeck Interface
+
 ![Current app implementation](IMG/IMG1.png)
 
+VitaDeck is the main graphical interface for the toolkit. It organizes the project into workspaces, settings, commands, and loadable components.
 
-# INDEX
+---
 
-* [Vita Ultra Parse](#vita-ultra-parse)
-* [VITADECK](#vitadeck)
+## 4. Features
 
-  * [Features](#features)
-  * [Configuration System](#configuration-system)
-  * [Bottom Bar Information](#bottom-bar-information)
-  * [Quick Commands](#quick-commands)
-  * [Components](#components)
+### 4.1 Configuration System
 
-    * [Currently Working Components](#currently-working-components)
-    * [In Progress](#in-progress)
-    * [Planned Features](#planned-features)
-  * [Custom Components](#custom-components)
+The configuration system currently supports:
 
-    * [Component Locations](#component-locations)
-    * [Minimal Examples](#minimal-examples)
-
-      * [Factory Style](#factory-style)
-      * [Class Style](#class-style)
-    * [Supported Optional Constructor / Factory Arguments](#supported-optional-constructor--factory-arguments)
-* [VitaDeck Setup Guide](#vitadeck-setup-guide)
-
-  * [Requirements](#requirements)
-  * [Prepare Your PS Vita](#1-prepare-your-ps-vita)
-
-    * [Install CatLog](#install-catlog)
-    * [Install VitaCompanion-VitaDeck](#install-vitacompanion-vitadeck)
-  * [Prepare the Workspace and Run VitaDeck](#2-prepare-the-workspace-and-run-vitadeck)
-
-    * [Install Dependencies](#install-dependencies)
-    * [Run the Application](#run-the-application)
-    * [Initial Setup](#initial-setup)
-    * [Generating an ELF File for Crash Parsing](#generating-an-elf-file-for-crash-parsing)
-* [Warnings](#warnings)
-
-
-
-# Features
-
-## Configuration System
-
-Current configuration support includes:
+- Workspace management
+- Basic help and information
+- SDK configuration
+- Server listening port configuration
+- Theme support
+- Custom theme support
+- Component enable/disable controls from the **Components** tab
 
 ![Configuration buttons](IMG/IMG2.png)
 
-* Workspace management
+#### Workspace Management
 
-Here you can create delete and load projects you are working on.
+Workspaces allow you to create, delete, and load the projects you are working on.
 
 ![Workspace management](IMG/IMG3.png)
 
-* Basic help and information
+#### Settings Panel
 
-* Settings panel with:
+The settings panel includes configuration options for the SDK, server ports, themes, and component loading.
 
-  * SDK configuration
-  * Server listening ports
-  * Theme support (custom themes can be added)
-  * Component enable/disable system from the Components tab
-
-![Theme  and component enable/disable](IMG/IMG4.png)
+![Theme and component enable/disable](IMG/IMG4.png)
 
 ---
 
-# Bottom Bar Information
+### 4.2 Bottom Status Bar
 
-The bottom status bar currently displays:
+The bottom status bar displays useful runtime information:
 
-* PS Vita battery status
-* Connection status
-* File transfer activity
-* Local PC IP address (useful to verify both devices are on the same network)
+- PS Vita battery status
+- Connection status
+- File transfer activity
+- Local PC IP address
+
+The local PC IP address is useful for confirming that your PC and PS Vita are connected to the same network.
 
 ![Bottom status bar](IMG/IMG5.png)
 
 ---
 
-# Quick Commands
+### 4.3 Quick Commands
 
-Available quick actions:
+The quick command panel provides shortcuts for common PS Vita actions:
 
-* Connect to the console via FTP
-* Retrieve the latest crash dump and perform core dump analysis
-* Send compiled executables (`eboot.bin`) to the console and execute them
-* Open a custom application
-* Quit all running applications
-* Reboot the console
-* Capture screenshots
-  * Screenshots are stored in the `screenshots` folder
-* Turn the screen on/off
-* Launch an application using a specific Title ID
+- Connect to the console through FTP
+- Retrieve the latest crash dump
+- Perform core dump analysis
+- Send a compiled executable, such as `eboot.bin`, to the console
+- Execute sent applications
+- Open a custom application
+- Quit all running applications
+- Reboot the console
+- Capture screenshots
+- Turn the screen on or off
+- Launch an application using a specific Title ID
+
+Screenshots are saved in the following folder:
+
+```text
+screenshots/
+```
 
 ![Available quick actions](IMG/IMG6.png)
 
 ---
 
-# Components
+## 5. Components
 
-## Currently Working Components
+### 5.1 Working Components
 
-* PS Vita logging to PC
-* Core dump and crash analysis
-* Screenshot capture
-* Project build support and build directory management
-* FTP file transfer
+The following components are currently working:
 
----
-
-## In Progress
-
-* Basic SDK configuration tools
+- PS Vita logging to PC
+- Core dump and crash analysis
+- Screenshot capture
+- Project build support
+- Build directory management
+- FTP file transfer
 
 ---
 
-## Planned Features
+### 5.2 In Progress
 
-* Razor capture management
-* Profiling tools and performance analysis
+The following features are currently being developed:
+
+- Basic SDK configuration tools
 
 ---
 
-# Custom Components
+### 5.3 Planned Features
 
-To create your own module, use the example located at:
+Future planned features include:
+
+- Razor capture management
+- Profiling tools
+- Performance analysis
+
+---
+
+## 6. Custom Components
+
+VitaDeck supports custom modules/components.
+
+A basic example is available at:
 
 ```text
 vita-ultra-parse/components/custom/example1.py
 ```
 
-Edit it to fit your needs.
+You can edit this file or create a new one to add your own functionality.
 
 ---
 
-## Component Locations
+### 6.1 Where to Place Custom Components
 
-Drop custom component files into either:
+Recommended location:
 
 ```text
 components/custom/*.py
 ```
 
-Recommended location.
-
-Or:
+Alternative location:
 
 ```text
 components/*.py
 ```
 
-Top-level components excluding built-in module names.
+When placing custom components in the top-level `components/` folder, avoid using names that conflict with built-in modules.
 
-On application startup, each discovered file is automatically added as a loadable component under:
+On application startup, each discovered component file is automatically added as a loadable component under:
 
 ```text
 Settings > Component Loading
@@ -178,9 +217,9 @@ Settings > Component Loading
 
 ---
 
-# Minimal Examples
+### 6.2 Minimal Component Examples
 
-## Factory Style
+#### Factory Style
 
 ```python
 from PySide6.QtWidgets import QLabel
@@ -191,9 +230,7 @@ def create_component():
     return QLabel("Hello from custom component")
 ```
 
----
-
-## Class Style
+#### Class Style
 
 ```python
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel
@@ -211,85 +248,97 @@ class ComponentTab(QWidget):
 
 ---
 
-# Supported Optional Constructor / Factory Arguments
+### 6.3 Supported Optional Arguments
 
 Custom components may optionally receive the following arguments by name:
 
-* `settings`
-* `cmd_thread`
-* `parent`
-* `project_root`
-* `screenshots_dir`
+- `settings`
+- `cmd_thread`
+- `parent`
+- `project_root`
+- `screenshots_dir`
 
 ---
 
+## 7. Setup Guide
 
-# VitaDeck Setup Guide
+### 7.1 Requirements
 
-## Requirements
+Before starting, make sure you have:
 
-Before getting started, make sure you have:
-
-* Python 3.x installed
-* A PS Vita with:
-
-  * VitaShell
-  * `catlog`
-  * the modified `vitacompanion-vitadeck` plugin
-* Your PC and PS Vita connected to the same network
+- Python 3.x installed
+- A PS Vita with:
+  - VitaShell
+  - `catlog`
+  - The modified `vitacompanion-vitadeck` plugin
+- Your PC and PS Vita connected to the same network
 
 ---
 
-# 1. Prepare Your PS Vita
+### 7.2 Prepare Your PS Vita
 
-## Install CatLog
+#### 7.2.1 Install CatLog
 
-Make sure your PS Vita is sending logs to the server using `catlog`.
+Install and configure `catlog` so the PS Vita can send logs to the server.
 
-* Repository: https://github.com/isage/catlog
-* Ensure both the Vita and the server use the same IP address and port configuration.
+Repository:
+
+```text
+https://github.com/isage/catlog
+```
+
+Make sure both the PS Vita and the server use the same IP address and port configuration.
 
 ---
 
-## Install VitaCompanion-VitaDeck
+#### 7.2.2 Install VitaCompanion-VitaDeck
 
 VitaDeck requires the modified VitaCompanion plugin fork with screenshot and battery command support.
 
-* Repository: https://github.com/Rocroverss/vitacompanion-vitadeck
-* Releases: https://github.com/Rocroverss/vitacompanion-vitadeck/releases
+Repository:
 
-### Installation Steps
+```text
+https://github.com/Rocroverss/vitacompanion-vitadeck
+```
+
+Releases:
+
+```text
+https://github.com/Rocroverss/vitacompanion-vitadeck/releases
+```
+
+#### Installation Steps
 
 1. Launch **VitaShell** on your PS Vita.
 2. Press `SELECT` to start the FTP server.
 3. Copy `vitacompanion.suprx` to:
 
-```text
-ur0:/tai/
-```
+   ```text
+   ur0:/tai/
+   ```
 
-4. Edit:
+4. Edit the following file:
 
-```text
-ur0:/tai/config.txt
-```
+   ```text
+   ur0:/tai/config.txt
+   ```
 
-5. Add the following lines:
+5. Add these lines:
 
-```text
-*main
-ur0:tai/vitacompanion.suprx
-```
+   ```text
+   *main
+   ur0:tai/vitacompanion.suprx
+   ```
 
 6. Reboot your PS Vita.
 
-You are now ready to use VitaDeck.
+After rebooting, your PS Vita should be ready to use with VitaDeck.
 
 ---
 
-# 2. Prepare the Workspace and Run VitaDeck
+### 7.3 Prepare Your PC Workspace
 
-## Install Dependencies
+#### 7.3.1 Install Dependencies
 
 Install the required Python packages:
 
@@ -299,9 +348,9 @@ pip install -r requirements.txt
 
 ---
 
-## Run the Application
+#### 7.3.2 Run the Application
 
-Start VitaDeck using:
+Start VitaDeck with:
 
 ```bash
 python main.py
@@ -309,24 +358,27 @@ python main.py
 
 ---
 
-Initial Setup
+### 7.4 Initial Application Setup
 
-Open the Workspaces tab.
+After launching VitaDeck:
 
-Create a new workspace.
+1. Open the **Workspaces** tab.
+2. Create a new workspace.
+3. Configure the modules you want to use.
+4. Open **Settings**.
+5. Configure the SDK path.
+6. Optional: load the ELF file in the **Core Dump** section to enable crash parsing support.
+7. Optional: configure the local executable path for the **Quick Settings** menu.
 
-Configure the modules you want to use.
+---
 
-Open Settings and configure the SDK path.
+### 7.5 Generate an ELF File for Crash Parsing
 
-(Optional) Load the ELF file in the Core Dump section for crash parsing support.
+If your project build is not generating an ELF file, add a post-build command to your `CMakeLists.txt`.
 
-Generating an ELF File for Crash Parsing
+Replace the target name, file name, and output paths with values that match your project.
 
-If your project build is not generating an ELF file, add the following snippet to your CMakeLists.txt.
-
-Replace the paths and executable names with the ones matching your project setup.
-
+```cmake
 # Post-build: copy raw ELF for parsing
 add_custom_command(
     TARGET kkr
@@ -335,23 +387,35 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:kkr> /home/mint/Desktop/vita-parse-core/kkr.elf
     COMMENT "Copying raw ELF for parsing output"
 )
+```
 
-What You Should Change
+#### What You Should Change
 
-Replace kkr with your target name.
+Replace the following values:
 
-Replace kkr.elf with your desired ELF filename.
+- `kkr`  
+  Your CMake target name.
 
-Replace:
+- `kkr.elf`  
+  The desired ELF output filename.
 
-/home/mint/Desktop/vita-parse-core/kkr.elf
-
-with the output path you want to use on your system.
-
-Configure the local executable path for the Quick Settings menu if needed.
+- `/home/mint/Desktop/vita-parse-core/kkr.elf`  
+  The output path you want to use on your system.
 
 ---
 
+## 8. Platform Notes
+
 > [!WARNING]
-> VitaDeck has been primarily tested on Linux.
+> VitaDeck has primarily been tested on Linux.
+>
 > Windows support may work, but it has not been fully tested yet.
+
+---
+
+## 9. Useful Links
+
+- [v-atamanenko GitHub](https://github.com/v-atamanenko)
+- [catlog repository](https://github.com/isage/catlog)
+- [VitaCompanion-VitaDeck repository](https://github.com/Rocroverss/vitacompanion-vitadeck)
+- [VitaCompanion-VitaDeck releases](https://github.com/Rocroverss/vitacompanion-vitadeck/releases)
