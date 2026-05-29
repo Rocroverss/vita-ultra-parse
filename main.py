@@ -12,6 +12,17 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Any, Dict, List, Tuple
 
+"""Components"""
+from components.android_so_analysis import *  # noqa: F401,F403
+from components.build import *  # noqa: F401,F403
+from components.config import *  # noqa: F401,F403
+from components.core_dump import *  # noqa: F401,F403
+from components.file_transfer import *  # noqa: F401,F403
+from components.logging import *  # noqa: F401,F403
+from components.sdk_installation import *  # noqa: F401,F403
+from components.theme_manager import *  # noqa: F401,F403
+
+
 user_site_packages = site.getusersitepackages()
 if user_site_packages not in sys.path:
     sys.path.append(user_site_packages)

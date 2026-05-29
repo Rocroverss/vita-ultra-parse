@@ -224,6 +224,8 @@ class SettingsTab(QWidget):
         )
 
         self.component_list = QListWidget()
+        self.component_list.setMinimumHeight(400)
+
         self.component_list.setSelectionMode(QListWidget.SingleSelection)
         self.component_list.setDragDropMode(QListWidget.InternalMove)
         self.component_list.setDefaultDropAction(Qt.MoveAction)
