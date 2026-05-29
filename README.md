@@ -402,4 +402,5 @@ Replace the following values:
 - [gl33ntwine](https://github.com/v-atamanenko) for the original idea.
 - [Paddel06](https://github.com/Paddel06) and [Rinnegatamante](https://github.com/Rinnegatamante)  for the renommendation of commads.
 - [isage](https://github.com/isage/catlog) for the catlog plugin.
+- [withLogic](https://github.com/withLogic) for additional testing.
 
