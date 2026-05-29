@@ -136,7 +136,7 @@ def c_str(data, offset=0):
 # ==========================================
 
 try:
-    from utils import settings
+    from utils import choose_preferred_elf, settings
 except ImportError:
     class _Settings:
         def __init__(self):
@@ -153,6 +153,26 @@ except ImportError:
         def set(self, key, value):
             self._d[key] = value
     settings = _Settings()
+
+    def choose_preferred_elf(build_dir, fallback_dirs):
+        candidates = []
+        for directory in [build_dir, *(fallback_dirs or [])]:
+            if not directory or not os.path.isdir(directory):
+                continue
+            for filename in os.listdir(directory):
+                if not filename.lower().endswith(".elf"):
+                    continue
+                full_path = os.path.join(directory, filename)
+                try:
+                    with open(full_path, "rb") as handle:
+                        if handle.read(4) != b"\x7fELF":
+                            continue
+                    candidates.append(full_path)
+                except Exception:
+                    continue
+        if not candidates:
+            return None
+        return max(candidates, key=os.path.getmtime)
 
 
 # ==========================================
@@ -1001,21 +1021,36 @@ class CrashFetchThread(QThread):
 
             self.progress_signal.emit("Download complete.", False)
 
-            # 5. Locate the ELF file
+            # 5. Locate the freshest valid ELF from the build directory first,
+            # then fall back to the app/parse-core directory if needed.
             build_dir = self.build_dir
-            if not os.path.isdir(build_dir):
-                self.error_signal.emit(f"Build directory invalid: {build_dir}")
+            fallback_dir = settings.get("dump_folder", "")
+
+            if build_dir and not os.path.isdir(build_dir):
+                self.progress_signal.emit(
+                    f"Configured build directory unavailable: <b>{build_dir}</b>.",
+                    True,
+                )
+            if fallback_dir and not os.path.isdir(fallback_dir):
+                self.progress_signal.emit(
+                    f"Fallback ELF directory unavailable: <b>{fallback_dir}</b>.",
+                    True,
+                )
+
+            preferred_elf = choose_preferred_elf(build_dir, [fallback_dir])
+            if preferred_elf is None:
+                self.error_signal.emit(
+                    "No valid .elf files found in the build directory or fallback project directory."
+                )
                 return
 
-            elf_files = [os.path.join(build_dir, f) for f in os.listdir(build_dir) if f.endswith(".elf")]
-            if not elf_files:
-                self.error_signal.emit("No .elf files found in build directory.")
-                return
-
-            # Get the most recently modified ELF file (assumed to be the correct one)
-            latest_elf_path = max(elf_files, key=os.path.getmtime)
-
-            self.progress_signal.emit(f"Using ELF: <b>{os.path.basename(latest_elf_path)}</b>.", True)
+            latest_elf_path = str(preferred_elf)
+            self.progress_signal.emit(
+                "Using ELF: "
+                f"<b>{os.path.basename(latest_elf_path)}</b> "
+                f"from <b>{os.path.dirname(latest_elf_path)}</b>.",
+                True,
+            )
 
             # 6. Signal the main thread to start parsing
             self.fetched_files_signal.emit(latest_elf_path, self.temp_core_path)
@@ -1158,8 +1193,9 @@ class CoreDumpTab(QWidget):
 
 
     def load_elf_file(self):
+        initial_dir = self.build_dir if self.build_dir and os.path.isdir(self.build_dir) else self.dump_folder
         filename, _ = QFileDialog.getOpenFileName(
-            self, "Select ELF File", self.dump_folder, "ELF Binary (*.elf);;All Files (*)"
+            self, "Select ELF File", initial_dir, "ELF Binary (*.elf);;All Files (*)"
         )
         if not filename: return
 

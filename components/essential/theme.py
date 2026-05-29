@@ -14,6 +14,7 @@ class Theme:
         self.image_opacity: float = 1.0
         self.image_location: str = "none"
         self.aspect_ratio_mode: str = "keep"
+        self.ui_elements_opacity: float = 1.0
         self.color_palette: Dict[str, str] = {}
         self.palette: Dict[str, str] = {}
         self.icons: Dict[str, str] = {}
@@ -76,11 +77,19 @@ class Theme:
                     line, "aspect_ratio_mode", "keep"
                 ).lower()
 
+            elif line.lower().startswith("ui_elements_opacity"):
+                val = self._parse_theme_line(line, "ui_elements_opacity", "1.0")
+                try:
+                    self.ui_elements_opacity = float(val)
+                except ValueError:
+                    self.ui_elements_opacity = 1.0
+
         self.background_settings = {
             "opacity": str(self.opacity),
             "image_opacity": str(self.image_opacity),
             "image_location": self.image_location,
             "aspect_ratio_mode": self.aspect_ratio_mode,
+            "ui_elements_opacity": str(self.ui_elements_opacity),
         }
 
     def _load_palette(self):

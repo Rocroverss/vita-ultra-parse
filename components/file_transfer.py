@@ -1,4 +1,5 @@
 import os
+import shutil
 import threading
 import time
 import ftplib
@@ -17,6 +18,7 @@ class FtpWorker(QThread):
     status_signal = Signal(str, str)  # status_msg, color_code
     listing_signal = Signal(list)
     progress_signal = Signal(str)
+    downloaded_file_signal = Signal(str)
     
     def __init__(self):
         super().__init__()
@@ -215,34 +217,50 @@ class FtpWorker(QThread):
         try:
             all_files = self._get_file_list_flat(remote_path) 
             
-            relevant_files = [
-                f for f in all_files 
-                if Path(f).name.lower().endswith('.jpg')
-            ]
+            pattern = re.compile(file_pattern) if file_pattern else None
+            relevant_files = []
+            for remote_file in all_files:
+                file_name = Path(remote_file).name
+                if pattern is not None:
+                    if not pattern.fullmatch(file_name):
+                        continue
+                elif not file_name.lower().endswith(".jpg"):
+                    continue
+                relevant_files.append(remote_file)
             
             if not relevant_files:
                 self.status_signal.emit(f"No .jpg files found in {remote_path}.", "#777")
-                self.progress_signal.emit("Transfer idle")
+                self.progress_signal.emit("Idle")
                 return
 
             relevant_files.sort()
             latest_file_remote_path = relevant_files[-1]
             latest_file_name = Path(latest_file_remote_path).name
             
-            # --- FIX: FORCE DOWNLOAD TO 'screenshots' FOLDER ---
+            target_download_dir = Path(local_path or os.getcwd())
+            target_download_dir.mkdir(parents=True, exist_ok=True)
+            downloaded_file_path = target_download_dir / latest_file_name
+
+            # Always import a copy into the app gallery folder.
             program_root = Path(__file__).resolve().parents[1]
             screenshots_dir = program_root / "screenshots"
             screenshots_dir.mkdir(parents=True, exist_ok=True)
-            local_target_filepath = screenshots_dir / latest_file_name
-            # ---------------------------------------------
+            gallery_file_path = screenshots_dir / latest_file_name
             
             self.progress_signal.emit(f"Downloading {latest_file_name}...")
             
-            with open(local_target_filepath, 'wb') as local_file:
+            with open(downloaded_file_path, 'wb') as local_file:
                 self.ftp.retrbinary(f'RETR {latest_file_name}', local_file.write)
 
-            self.status_signal.emit(f"Saved to screenshots/{latest_file_name}", "#3ecf4c")
-            self.progress_signal.emit("Transfer idle")
+            if downloaded_file_path.resolve() != gallery_file_path.resolve():
+                shutil.copy2(downloaded_file_path, gallery_file_path)
+
+            self.status_signal.emit(
+                f"Imported screenshot to {gallery_file_path.parent.name}/{latest_file_name}",
+                "#3ecf4c",
+            )
+            self.downloaded_file_signal.emit(str(gallery_file_path))
+            self.progress_signal.emit("Idle")
 
         except Exception as e:
             print(f"[FTP_ERROR] Download Error: {e}")

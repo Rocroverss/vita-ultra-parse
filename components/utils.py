@@ -1,7 +1,258 @@
-import struct
 import json
 import os
+import re
+import struct
+import sys
 import threading
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Dict, Iterable, Optional
+
+
+DYNAMIC_APP_DIR_TOKEN = "__APP_DIR__"
+WINDOWS_DRIVE_PATTERN = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def get_application_dir() -> Path:
+    """Returns the launched script/executable directory."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+
+    main_module = sys.modules.get("__main__")
+    main_file = getattr(main_module, "__file__", None)
+    if main_file:
+        return Path(main_file).resolve().parent
+
+    argv0 = sys.argv[0] if sys.argv else ""
+    if argv0:
+        try:
+            return Path(argv0).resolve().parent
+        except Exception:
+            pass
+
+    return Path.cwd().resolve()
+
+
+APP_DIR = get_application_dir()
+
+DEFAULT_COMPONENT_TOGGLE_DEFAULTS = {
+    "logging": True,
+    "core_dump": True,
+    "build": True,
+    "screenshots": True,
+    "file_transfer": True,
+    "workspace": True,
+    "help": True,
+    "razor": False,
+    "profiling": False,
+    "android": False,
+    "sdk": False,
+}
+
+DEFAULT_COMPONENT_ORDER = [
+    "logging",
+    "core_dump",
+    "build",
+    "screenshots",
+    "file_transfer",
+    "workspace",
+    "help",
+    "razor",
+    "profiling",
+    "android",
+    "sdk",
+]
+
+PATH_SETTING_KEYS = {
+    "sdk_path",
+    "dump_folder",
+    "last_build_dir",
+    "exec_path",
+    "custom_background_image",
+}
+
+
+def get_dynamic_dump_folder() -> str:
+    return str(APP_DIR)
+
+
+def _looks_like_windows_path(value: str) -> bool:
+    if not value:
+        return False
+    return bool(WINDOWS_DRIVE_PATTERN.match(value)) or value.startswith("\\\\")
+
+
+def _path_flavor(value: str) -> str:
+    if _looks_like_windows_path(value):
+        return "windows"
+    if "\\" in value and "/" not in value:
+        return "windows"
+    return "posix"
+
+
+def _pure_path(value: str):
+    value = str(value or "").strip()
+    if not value:
+        return None
+    if _path_flavor(value) == "windows":
+        return PureWindowsPath(value)
+    return PurePosixPath(value)
+
+
+def normalize_path_for_storage(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    if text == DYNAMIC_APP_DIR_TOKEN:
+        return text
+
+    flavor = _path_flavor(text)
+    current_is_windows = os.name == "nt"
+
+    # Resolve current-OS paths so stored values are stable and absolute.
+    if (current_is_windows and flavor == "windows") or (
+        not current_is_windows and flavor == "posix"
+    ):
+        path = Path(text).expanduser()
+        if not path.is_absolute():
+            path = APP_DIR / path
+        try:
+            return os.path.normpath(str(path.resolve(strict=False)))
+        except Exception:
+            return os.path.normpath(str(path))
+
+    pure = _pure_path(text)
+    return str(pure) if pure is not None else text
+
+
+def _normalized_parts(path_value: str):
+    pure = _pure_path(path_value)
+    if pure is None:
+        return None, ()
+    parts = pure.parts
+    if isinstance(pure, PureWindowsPath):
+        return pure, tuple(part.lower() for part in parts)
+    return pure, parts
+
+
+def _relative_subpath(path_value: str, base_value: str):
+    pure_path, cmp_path = _normalized_parts(path_value)
+    pure_base, cmp_base = _normalized_parts(base_value)
+    if pure_path is None or pure_base is None:
+        return None
+    if type(pure_path) is not type(pure_base):
+        return None
+    if len(cmp_path) < len(cmp_base) or cmp_path[: len(cmp_base)] != cmp_base:
+        return None
+    relative_parts = pure_path.parts[len(pure_base.parts) :]
+    if isinstance(pure_path, PureWindowsPath):
+        return PureWindowsPath(*relative_parts)
+    return PurePosixPath(*relative_parts)
+
+
+def _join_pure(base_value: str, relative_path) -> str:
+    pure_base = _pure_path(base_value)
+    if pure_base is None:
+        return ""
+    if relative_path is None:
+        return str(pure_base)
+    relative_parts = relative_path.parts
+    if isinstance(pure_base, PureWindowsPath):
+        return str(PureWindowsPath(pure_base, *relative_parts))
+    return str(PurePosixPath(pure_base, *relative_parts))
+
+
+def project_root_from_build_dir(build_dir: str) -> str:
+    pure = _pure_path(build_dir)
+    if pure is None:
+        return ""
+    if pure.name.lower() == "build":
+        parent = pure.parent
+        if str(parent) not in ("", "."):
+            return str(parent)
+    return str(pure)
+
+
+def plan_related_path_updates(
+    old_build_dir: str, new_build_dir: str, path_values: Dict[str, str]
+) -> Dict[str, str]:
+    old_build_dir = normalize_path_for_storage(old_build_dir)
+    new_build_dir = normalize_path_for_storage(new_build_dir)
+    if not old_build_dir or not new_build_dir or old_build_dir == new_build_dir:
+        return {}
+
+    updates: Dict[str, str] = {}
+    old_project_root = project_root_from_build_dir(old_build_dir)
+    new_project_root = project_root_from_build_dir(new_build_dir)
+
+    for key, raw_value in path_values.items():
+        current_value = normalize_path_for_storage(raw_value)
+        if not current_value:
+            continue
+
+        new_value = None
+        relative_to_build = _relative_subpath(current_value, old_build_dir)
+        if relative_to_build is not None:
+            new_value = _join_pure(new_build_dir, relative_to_build)
+        else:
+            relative_to_project = _relative_subpath(current_value, old_project_root)
+            if relative_to_project is not None:
+                new_value = _join_pure(new_project_root, relative_to_project)
+
+        if new_value and new_value != current_value:
+            updates[key] = normalize_path_for_storage(new_value)
+
+    return updates
+
+
+def is_valid_elf_file(path_value) -> bool:
+    try:
+        path = Path(path_value)
+        if not path.is_file():
+            return False
+        with path.open("rb") as handle:
+            return handle.read(4) == b"\x7fELF"
+    except Exception:
+        return False
+
+
+def newest_valid_elf_in_directory(directory) -> Optional[Path]:
+    try:
+        base_path = Path(str(directory or ""))
+    except Exception:
+        return None
+
+    if not base_path.is_dir():
+        return None
+
+    candidates = []
+    for path in base_path.iterdir():
+        if path.is_file() and path.suffix.lower() == ".elf" and is_valid_elf_file(path):
+            candidates.append(path)
+
+    if not candidates:
+        return None
+
+    return max(candidates, key=lambda item: item.stat().st_mtime)
+
+
+def choose_preferred_elf(build_dir, fallback_dirs: Iterable) -> Optional[Path]:
+    newest_build = newest_valid_elf_in_directory(build_dir)
+    newest_fallback = None
+
+    for directory in fallback_dirs:
+        candidate = newest_valid_elf_in_directory(directory)
+        if candidate is None:
+            continue
+        if newest_fallback is None or candidate.stat().st_mtime > newest_fallback.stat().st_mtime:
+            newest_fallback = candidate
+
+    if newest_build and newest_fallback:
+        if newest_build.stat().st_mtime >= newest_fallback.stat().st_mtime:
+            return newest_build
+        return newest_fallback
+
+    return newest_build or newest_fallback
 
 # ==========================================
 # 1. SETTINGS MANAGER (Workspace Support)
@@ -19,7 +270,7 @@ class SettingsManager:
             "vita_port": 1337,
             "log_port": 8080,
             "sdk_path": "",
-            "dump_folder": os.getcwd(),
+            "dump_folder": DYNAMIC_APP_DIR_TOKEN,
             "last_build_dir": os.getcwd(),
             "launch_title_id": "VHBB00001",
             "font_size": 12, 
@@ -28,37 +279,14 @@ class SettingsManager:
             "target_app_id": "PCSG00000",
             "base_font_size": 10, # Added for overall app styling
             "theme_name": "default",
-            "window_opacity": 1.0,
-            "background_image_opacity": 1.0,
-            "background_aspect_mode": "keep",
-            "ui_elements_opacity": 1.0,
+            "window_opacity": None,
+            "background_image_opacity": None,
+            "background_aspect_mode": "",
+            "ui_elements_opacity": None,
+            "custom_background_image": "",
             "managed_libraries": [],
-            "component_toggles": {
-                "workspace": True,
-                "help": True,
-                "logging": True,
-                "core_dump": True,
-                "razor": True,
-                "profiling": True,
-                "android": True,
-                "screenshots": True,
-                "build": True,
-                "sdk": True,
-                "file_transfer": True,
-            },
-            "component_order": [
-                "workspace",
-                "help",
-                "logging",
-                "core_dump",
-                "razor",
-                "profiling",
-                "android",
-                "screenshots",
-                "build",
-                "sdk",
-                "file_transfer",
-            ],
+            "component_toggles": dict(DEFAULT_COMPONENT_TOGGLE_DEFAULTS),
+            "component_order": list(DEFAULT_COMPONENT_ORDER),
         }
         
         # Load the overall data structure, which now manages workspaces
@@ -66,6 +294,11 @@ class SettingsManager:
 
     def _normalize_workspace_data(self, ws_data):
         merged = {**self.workspace_defaults, **ws_data}
+        merged["dump_folder"] = DYNAMIC_APP_DIR_TOKEN
+        for key in PATH_SETTING_KEYS:
+            if key == "dump_folder":
+                continue
+            merged[key] = normalize_path_for_storage(merged.get(key, ""))
         merged["managed_libraries"] = list(merged.get("managed_libraries", []))
         default_toggles = dict(self.workspace_defaults.get("component_toggles", {}))
         raw_toggles = merged.get("component_toggles", {})
@@ -158,12 +391,23 @@ class SettingsManager:
         """Gets a setting from the current workspace."""
         current_name = self.get_current_workspace_name()
         current_ws = self.data["workspaces"].get(current_name, {})
-        return current_ws.get(key, self.workspace_defaults.get(key, default))
+        value = current_ws.get(key, self.workspace_defaults.get(key, default))
+        if key == "dump_folder":
+            if not value or value == DYNAMIC_APP_DIR_TOKEN:
+                return get_dynamic_dump_folder()
+            return normalize_path_for_storage(value)
+        if key in PATH_SETTING_KEYS:
+            return normalize_path_for_storage(value)
+        return value
 
     def set(self, key, value):
         """Sets a setting in the current workspace and saves."""
         current_name = self.get_current_workspace_name()
         if current_name in self.data["workspaces"]:
+            if key == "dump_folder":
+                value = DYNAMIC_APP_DIR_TOKEN
+            elif key in PATH_SETTING_KEYS:
+                value = normalize_path_for_storage(value)
             self.data["workspaces"][current_name][key] = value
             self.save()
 

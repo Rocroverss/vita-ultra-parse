@@ -21,6 +21,14 @@ from components.file_transfer import *  # noqa: F401,F403
 from components.logging import *  # noqa: F401,F403
 from components.sdk_installation import *  # noqa: F401,F403
 from components.theme_manager import *  # noqa: F401,F403
+from components.icon_utils import themed_svg_icon_from_content, themed_svg_icon_from_path
+from utils import (
+    DEFAULT_COMPONENT_ORDER,
+    DEFAULT_COMPONENT_TOGGLE_DEFAULTS,
+    get_application_dir,
+    normalize_path_for_storage,
+    plan_related_path_updates,
+)
 
 
 user_site_packages = site.getusersitepackages()
@@ -81,7 +89,7 @@ try:
 except ImportError:
     cxxfilt = None
 
-BASE_DIR = Path(os.path.dirname(os.path.abspath(__file__))) 
+BASE_DIR = get_application_dir()
 
 # Define the folder where screenshots are stored. It will be created if it doesn't exist.
 SCREENSHOTS_DIR = BASE_DIR / "screenshots"
@@ -116,26 +124,12 @@ current_theme: Optional[Any] = None
 
 def svg_to_qicon(svg_content: str, size: int = 24) -> QIcon:
     """Converts an SVG string into a QIcon."""
-    renderer = QSvgRenderer(QByteArray(svg_content.encode("utf-8")))
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    renderer.render(painter)
-    painter.end()
-    return QIcon(pixmap)
+    return themed_svg_icon_from_content(svg_content, size=size)
 
 
 def qicon_from_svg_file(path: str, size: int = 24) -> QIcon:
     """Converts an SVG file on disk into a QIcon."""
-    if not os.path.exists(path):
-        return QIcon()
-    renderer = QSvgRenderer(path)
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    renderer.render(painter)
-    painter.end()
-    return QIcon(pixmap)
+    return themed_svg_icon_from_path(path, size=size)
 
 
 def load_theme(theme_name: str, base_dir: Optional[Path] = None) -> Optional[Any]:
@@ -282,40 +276,17 @@ except ImportError as e:
                 "exec_path": "",
                 "target_app_id": "PCSG00000",
                 "launch_title_id": "VHBB00001",
-                "dump_folder": "",
+                "dump_folder": "__APP_DIR__",
                 "vita_port": 1337,
                 "base_font_size": 10,
                 "theme_name": "default",
-                "window_opacity": 1.0,
-                "background_image_opacity": 1.0,
-                "background_aspect_mode": "keep",
-                "ui_elements_opacity": 1.0,
-                "component_toggles": {
-                    "workspace": True,
-                    "help": True,
-                    "logging": True,
-                    "core_dump": True,
-                    "razor": True,
-                    "profiling": True,
-                    "android": True,
-                    "screenshots": True,
-                    "build": True,
-                    "sdk": True,
-                    "file_transfer": True,
-                },
-                "component_order": [
-                    "workspace",
-                    "help",
-                    "logging",
-                    "core_dump",
-                    "razor",
-                    "profiling",
-                    "android",
-                    "screenshots",
-                    "build",
-                    "sdk",
-                    "file_transfer",
-                ],
+                "window_opacity": None,
+                "background_image_opacity": None,
+                "background_aspect_mode": "",
+                "ui_elements_opacity": None,
+                "custom_background_image": "",
+                "component_toggles": dict(DEFAULT_COMPONENT_TOGGLE_DEFAULTS),
+                "component_order": list(DEFAULT_COMPONENT_ORDER),
             },
         }
         _current_workspace_name = DEFAULT_WORKSPACE_NAME
@@ -358,6 +329,8 @@ except ImportError as e:
             return False
 
         def get(self, key, default=None):
+            if key == "dump_folder":
+                return str(BASE_DIR)
             return self._current_data.get(key, default)
 
         def set(self, key, value):
@@ -484,19 +457,7 @@ class VitaDeckModern(QWidget):
         r"(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$"
     )
 
-    COMPONENT_TOGGLE_DEFAULTS: Dict[str, bool] = {
-        "workspace": True,
-        "help": True,
-        "logging": True,
-        "core_dump": True,
-        "razor": True,
-        "profiling": True,
-        "android": True,
-        "screenshots": True,
-        "build": True,
-        "sdk": True,
-        "file_transfer": True,
-    }
+    COMPONENT_TOGGLE_DEFAULTS: Dict[str, bool] = dict(DEFAULT_COMPONENT_TOGGLE_DEFAULTS)
     COMPONENT_LABELS: Dict[str, str] = {
         "workspace": "Workspace",
         "help": "Help",
@@ -524,7 +485,7 @@ class VitaDeckModern(QWidget):
         "ui_misc_tabs",
         "utils",
     }
-    COMPONENT_DEFAULT_ORDER: List[str] = list(COMPONENT_TOGGLE_DEFAULTS.keys())
+    COMPONENT_DEFAULT_ORDER: List[str] = list(DEFAULT_COMPONENT_ORDER)
 
     def _get_component_toggles(self) -> Dict[str, bool]:
         raw = settings.get("component_toggles", {})
@@ -714,12 +675,7 @@ class VitaDeckModern(QWidget):
             self.update()
             return
 
-        bg_settings = getattr(current_theme, "background_settings", {})
-        try:
-            opacity = float(bg_settings.get("opacity", 1.0))
-            self.setWindowOpacity(opacity)
-        except ValueError:
-            self.setWindowOpacity(1.0)
+        self.set_window_opacity()
         self._refresh_background_state()
         self.update()
 
@@ -731,7 +687,7 @@ class VitaDeckModern(QWidget):
             except Exception:
                 theme_default = 1.0
 
-        raw = settings.get("background_image_opacity", theme_default)
+        raw = settings.get("background_image_opacity", None)
         try:
             val = float(raw)
         except (TypeError, ValueError):
@@ -739,11 +695,18 @@ class VitaDeckModern(QWidget):
         return max(0.0, min(1.0, val))
 
     def _ui_elements_opacity(self) -> float:
-        raw = settings.get("ui_elements_opacity", 1.0)
+        theme_default = 1.0
+        if current_theme is not None:
+            try:
+                theme_default = float(getattr(current_theme, "ui_elements_opacity", 1.0))
+            except Exception:
+                theme_default = 1.0
+
+        raw = settings.get("ui_elements_opacity", None)
         try:
             val = float(raw)
         except (TypeError, ValueError):
-            val = 1.0
+            val = theme_default
         return max(0.1, min(1.0, val))
 
     @staticmethod
@@ -758,6 +721,24 @@ class VitaDeckModern(QWidget):
         a = max(0.0, min(1.0, float(alpha)))
         return f"rgba({c.red()}, {c.green()}, {c.blue()}, {a:.3f})"
 
+    def _resolved_background_image_path(self) -> Optional[Path]:
+        if not current_theme:
+            return None
+
+        custom_background = settings.get("custom_background_image", "")
+        if custom_background:
+            candidate = Path(custom_background)
+            if candidate.is_file():
+                return candidate
+
+        image_location = getattr(current_theme, "image_location", None)
+        if image_location and str(image_location).lower() != "none":
+            candidate = current_theme.theme_dir / str(image_location)
+            if candidate.is_file():
+                return candidate
+
+        return None
+
     def _refresh_background_state(self):
         self._background_enabled = False
         self._background_pixmap = QPixmap()
@@ -767,12 +748,8 @@ class VitaDeckModern(QWidget):
         if not current_theme:
             return
 
-        image_location = getattr(current_theme, "image_location", None)
-        if not image_location or str(image_location).lower() == "none":
-            return
-
-        image_path = current_theme.theme_dir / str(image_location)
-        if not image_path.is_file():
+        image_path = self._resolved_background_image_path()
+        if image_path is None or not image_path.is_file():
             return
 
         pixmap = QPixmap(str(image_path))
@@ -816,6 +793,12 @@ class VitaDeckModern(QWidget):
     def on_ui_elements_opacity_changed(self, opacity: float):
         settings.set("ui_elements_opacity", max(0.1, min(1.0, float(opacity))))
         self.apply_style(initial=False)
+
+    @Slot(str)
+    def on_background_image_path_changed(self, image_path: str):
+        settings.set("custom_background_image", image_path or "")
+        self._refresh_background_state()
+        self.update()
 
 
     @Slot(str)
@@ -889,7 +872,7 @@ class VitaDeckModern(QWidget):
         self.component_default_order = list(self.COMPONENT_DEFAULT_ORDER)
         for key, spec in self.custom_component_specs.items():
             self.component_labels[key] = spec["label"]
-            self.component_toggle_defaults[key] = True
+            self.component_toggle_defaults[key] = False
             if key not in self.component_default_order:
                 self.component_default_order.append(key)
         self.component_toggles = self._get_component_toggles()
@@ -901,7 +884,10 @@ class VitaDeckModern(QWidget):
         content_and_sidebar = QHBoxLayout()
 
         self.tabs = QTabWidget()
+        self.tabs.setObjectName("mainTabs")
         self.tabs.setFont(QFont("Arial", settings.get("base_font_size", 10)))
+        self.tabs.setDocumentMode(True)
+        self.tabs.tabBar().setDrawBase(False)
 
         self.tab_workspace = None
         self.tab_logging = None
@@ -968,6 +954,10 @@ class VitaDeckModern(QWidget):
                     if hasattr(ftp_thread, "progress_signal"):
                         ftp_thread.progress_signal.connect(self.update_transfer_status)
                         ftp_thread.progress_signal.connect(self.check_launch_queue)
+                    if hasattr(ftp_thread, "downloaded_file_signal"):
+                        ftp_thread.downloaded_file_signal.connect(
+                            self.handle_downloaded_screenshot
+                        )
                 self.idx_transfer = self.tabs.addTab(self.tab_transfer, "File Transfer")
             elif component_key == "logging":
                 self.tab_logging = LoggingTab()
@@ -999,6 +989,14 @@ class VitaDeckModern(QWidget):
         self.tab_settings.restart_log_server_signal.connect(self.restart_logging_server)
         self.tab_settings.apply_style_signal.connect(self.apply_style)
         self.tab_settings.theme_changed.connect(self.change_theme)
+        if hasattr(self.tab_settings, "background_image_path_changed"):
+            self.tab_settings.background_image_path_changed.connect(
+                self.on_background_image_path_changed
+            )
+        if hasattr(self.tab_settings, "build_directory_change_requested"):
+            self.tab_settings.build_directory_change_requested.connect(
+                self.handle_build_directory_change
+            )
         if hasattr(self.tab_settings, "component_config_changed"):
             self.tab_settings.component_config_changed.connect(self.on_component_config_changed)
         elif hasattr(self.tab_settings, "component_toggles_changed"):
@@ -1015,8 +1013,13 @@ class VitaDeckModern(QWidget):
             self.tab_settings.ui_elements_opacity_changed.connect(
                 self.on_ui_elements_opacity_changed
             )
+        if hasattr(self.tab_build, "build_directory_change_requested"):
+            self.tab_build.build_directory_change_requested.connect(
+                self.handle_build_directory_change
+            )
 
         self.setup_tab_icons()
+        self.tabs.currentChanged.connect(self._update_special_tab_button_states)
 
         self._safe_set_tab_visible(self.idx_workspace, False)
         self._safe_set_tab_visible(self.idx_help, False)
@@ -1048,7 +1051,17 @@ class VitaDeckModern(QWidget):
     def set_window_opacity(self, opacity: float = None):
         """Applies the current workspace opacity setting to the window."""
         if opacity is None:
-            opacity = settings.get("window_opacity", 1.0)
+            theme_opacity = 1.0
+            if current_theme is not None:
+                try:
+                    theme_opacity = float(getattr(current_theme, "opacity", 1.0))
+                except Exception:
+                    theme_opacity = 1.0
+            raw_opacity = settings.get("window_opacity", None)
+            try:
+                opacity = float(raw_opacity)
+            except (TypeError, ValueError):
+                opacity = theme_opacity
 
         opacity = max(0.0, min(1.0, opacity))
         self.setWindowOpacity(opacity)
@@ -1098,10 +1111,17 @@ class VitaDeckModern(QWidget):
             old_corner_widget.deleteLater()
             self.tabs.setCornerWidget(None, Qt.TopRightCorner)
 
+        tab_bar_height = max(34, self.tabs.tabBar().sizeHint().height())
+        button_size = max(24, min(28, tab_bar_height - 8))
+        top_margin = max(0, ((tab_bar_height - button_size) // 2) - 4)
+        bottom_margin = max(0, tab_bar_height - button_size - top_margin)
         corner_widget = QWidget()
+        corner_widget.setObjectName("tabBarCornerWidget")
+        corner_widget.setFixedHeight(tab_bar_height)
         corner_layout = QHBoxLayout(corner_widget)
-        corner_layout.setContentsMargins(0, 0, 8, 0)
-        corner_layout.setSpacing(4)
+        corner_layout.setContentsMargins(10, top_margin, 10, bottom_margin)
+        corner_layout.setSpacing(6)
+        corner_layout.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         
         icon_tabs = []
         if self._component_enabled("workspace") and self.idx_workspace is not None:
@@ -1115,27 +1135,38 @@ class VitaDeckModern(QWidget):
             self.icon_buttons = []
         else:
             self.icon_buttons.clear()
+        self.special_tab_buttons = {}
 
+        corner_layout.addStretch(1)
 
         for name, tab_index, icon_key, fallback_svg in icon_tabs:
             btn = QPushButton()
+            btn.setObjectName("specialTabButton")
             btn.setFlat(True)
+            btn.setCheckable(True)
             
-            icon = self._get_themed_icon(icon_key, fallback_svg, size=20)
+            icon = self._get_themed_icon(icon_key, fallback_svg, size=18)
             btn.setIcon(icon)
-            btn.setIconSize(QSize(20, 20))
-            btn.setFixedSize(28, 28)
+            btn.setIconSize(QSize(18, 18))
+            btn.setFixedSize(button_size, button_size)
             btn.setToolTip(name)
             
             btn.clicked.connect(lambda checked=False, idx=tab_index: self.tabs.setCurrentIndex(idx))
             
             corner_layout.addWidget(btn)
             self.icon_buttons.append(btn)
-
-        corner_layout.addStretch()
+            self.special_tab_buttons[tab_index] = btn
         
         self.tabs.setCornerWidget(corner_widget, Qt.TopRightCorner)
         corner_widget.show()
+        self._update_special_tab_button_states()
+
+    def _update_special_tab_button_states(self):
+        current_index = self.tabs.currentIndex()
+        for tab_index, button in getattr(self, "special_tab_buttons", {}).items():
+            is_active = current_index == tab_index
+            if button.isChecked() != is_active:
+                button.setChecked(is_active)
 
     def _component_widget_map(self) -> Dict[str, Optional[QWidget]]:
         widget_map: Dict[str, Optional[QWidget]] = {
@@ -1346,6 +1377,81 @@ class VitaDeckModern(QWidget):
                 f"Settings for workspace '{settings.get_current_workspace_name()}' applied.",
             )
 
+    def _set_line_edit_text(self, widget: Optional[QLineEdit], value: str):
+        if widget is None:
+            return
+        value = value or ""
+        if widget.text() == value:
+            return
+        widget.blockSignals(True)
+        widget.setText(value)
+        widget.blockSignals(False)
+
+    def _sync_build_directory_state(self, new_build_dir: str):
+        if hasattr(self.tab_settings, "set_build_directory_value"):
+            self.tab_settings.set_build_directory_value(new_build_dir)
+        if hasattr(self.tab_build, "set_build_directory"):
+            self.tab_build.set_build_directory(new_build_dir)
+        elif hasattr(self.tab_build, "sync_with_settings"):
+            self.tab_build.sync_with_settings()
+        if hasattr(self.tab_core, "sync_with_settings"):
+            self.tab_core.sync_with_settings()
+
+    @Slot(str)
+    def handle_build_directory_change(self, new_build_dir: str):
+        normalized_new_dir = normalize_path_for_storage(new_build_dir)
+        current_build_dir = settings.get("last_build_dir", "")
+
+        if normalized_new_dir == current_build_dir:
+            self._sync_build_directory_state(normalized_new_dir)
+            return
+
+        related_updates = plan_related_path_updates(
+            current_build_dir,
+            normalized_new_dir,
+            {
+                "exec_path": settings.get("exec_path", ""),
+            },
+        )
+
+        settings.set("last_build_dir", normalized_new_dir)
+        self._sync_build_directory_state(normalized_new_dir)
+
+        if normalized_new_dir and not os.path.isdir(normalized_new_dir):
+            QMessageBox.warning(
+                self,
+                "Build Directory Warning",
+                f"Selected build directory does not currently exist:\n{normalized_new_dir}",
+            )
+
+        if related_updates:
+            preview_lines = []
+            if "exec_path" in related_updates:
+                preview_lines.append(
+                    "Local executable:\n"
+                    f"{settings.get('exec_path', '')}\n->\n{related_updates['exec_path']}"
+                )
+
+            reply = QMessageBox.question(
+                self,
+                "Update Related Paths",
+                "Project directory changed. Update related quick command paths?\n\n"
+                + "\n\n".join(preview_lines),
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes and "exec_path" in related_updates:
+                settings.set("exec_path", related_updates["exec_path"])
+                self._set_line_edit_text(
+                    getattr(self, "exec_entry", None), related_updates["exec_path"]
+                )
+
+    @Slot(str)
+    def handle_downloaded_screenshot(self, screenshot_path: str):
+        if hasattr(self.tab_screenshots, "import_screenshot"):
+            self.tab_screenshots.import_screenshot(screenshot_path)
+        elif hasattr(self.tab_screenshots, "refresh_list"):
+            self.tab_screenshots.refresh_list()
+
     @Slot(str)
     def change_theme(self, theme_name: str, from_workspace: bool = False):
         load_theme(theme_name)
@@ -1434,6 +1540,22 @@ class VitaDeckModern(QWidget):
         
         qss_parts.append(qss)
 
+        background_color = self.theme_color("background", "#1e1e1e")
+        foreground_color = self.theme_color("foreground", "#f0f0f0")
+        input_bg = self.theme_color("input_bg", "#2d2d2d")
+        input_border = self.theme_color("input_border", "#444444")
+        button_bg = self.theme_color("button_bg", "#2f4f6f")
+        button_border = self.theme_color("button_border", input_border)
+        tab_pane_bg = self.theme_color("tab_pane_bg", background_color)
+        tab_pane_border = self.theme_color("tab_pane_border", input_border)
+        tab_bg = self.theme_color("tab_bg", input_bg)
+        tab_fg = self.theme_color("tab_fg", foreground_color)
+        tab_selected_bg = self.theme_color("tab_selected_bg", button_bg)
+        tab_selected_border = self.theme_color("tab_selected_border", button_border)
+        tab_selected_fg = self.theme_color("tab_selected_fg", foreground_color)
+        tab_hover_bg = self.theme_color("tab_hover_bg", self.theme_color("button_hover_bg", "#3a668a"))
+        has_background_image = self._resolved_background_image_path() is not None
+
         log_bg = self.theme_color("log_bg", "#111")
         log_border = self.theme_color("log_border", "#333")
         log_text = self.theme_color("log_text", "#c0c0c0")
@@ -1458,6 +1580,164 @@ class VitaDeckModern(QWidget):
         )
         if button_radius_match:
             icon_button_radius = button_radius_match.group(1).strip()
+        tab_radius_match = re.search(
+            r"QTabBar::tab\s*\{[^}]*border-radius:\s*([^;]+);",
+            qss,
+            re.IGNORECASE | re.DOTALL,
+        )
+        tab_top_radius = "10px"
+        if tab_radius_match:
+            radius_value = tab_radius_match.group(1).strip()
+            radius_parts = radius_value.split()
+            if radius_parts:
+                tab_top_radius = radius_parts[0]
+        special_button_radius = icon_button_radius
+
+        chrome_qss = f"""
+QTabWidget#mainTabs {{
+    background: transparent;
+    border: none;
+}}
+
+QTabWidget#mainTabs::pane {{
+    background: {tab_pane_bg};
+    border: 1px solid {tab_pane_border};
+    border-radius: 10px;
+    top: -1px;
+}}
+
+QTabBar {{
+    background: transparent;
+    border: none;
+}}
+
+QTabBar::tab {{
+    padding: 8px 18px;
+    color: {tab_fg};
+    background: {tab_bg};
+    border: 1px solid {tab_pane_border};
+    border-bottom: none;
+    border-top-left-radius: {tab_top_radius};
+    border-top-right-radius: {tab_top_radius};
+    border-bottom-left-radius: 0px;
+    border-bottom-right-radius: 0px;
+    margin-right: 4px;
+    margin-bottom: 0px;
+}}
+
+QTabBar::tab:!selected {{
+    margin-top: 2px;
+}}
+
+QTabBar::tab:selected {{
+    background: {tab_selected_bg};
+    border-color: {tab_selected_border};
+    border-bottom-color: {tab_pane_bg};
+    margin-bottom: -1px;
+    color: {tab_selected_fg};
+}}
+
+QTabBar::tab:hover:!selected {{
+    background: {tab_hover_bg};
+}}
+
+#tabBarCornerWidget {{
+    background: transparent;
+    border: none;
+}}
+
+#specialTabButton {{
+    background-color: {button_bg};
+    border: 1px solid {button_border};
+    border-radius: {special_button_radius};
+    color: {foreground_color};
+    padding: 0;
+}}
+
+#specialTabButton:hover {{
+    background-color: {button_hover_bg};
+    border-color: {tab_selected_border};
+}}
+
+#specialTabButton:pressed {{
+    background-color: {button_pressed_bg};
+}}
+
+#specialTabButton:checked {{
+    background-color: {tab_selected_bg};
+    border: 2px solid {tab_selected_border};
+    color: {tab_selected_fg};
+}}
+
+QScrollBar:vertical {{
+    background: {self._color_with_alpha(input_bg, 0.92, input_bg)};
+    width: 14px;
+    margin: 4px 3px 4px 3px;
+    border: none;
+    border-radius: 7px;
+}}
+
+QScrollBar::handle:vertical {{
+    background: {self._color_with_alpha(button_bg, 0.96, button_bg)};
+    min-height: 30px;
+    border: 1px solid {button_border};
+    border-radius: 7px;
+}}
+
+QScrollBar::handle:vertical:hover {{
+    background: {self._color_with_alpha(button_hover_bg, 0.98, button_hover_bg)};
+}}
+
+QScrollBar::handle:vertical:pressed {{
+    background: {button_pressed_bg};
+}}
+
+QScrollBar:horizontal {{
+    background: {self._color_with_alpha(input_bg, 0.92, input_bg)};
+    height: 14px;
+    margin: 3px 4px 3px 4px;
+    border: none;
+    border-radius: 7px;
+}}
+
+QScrollBar::handle:horizontal {{
+    background: {self._color_with_alpha(button_bg, 0.96, button_bg)};
+    min-width: 30px;
+    border: 1px solid {button_border};
+    border-radius: 7px;
+}}
+
+QScrollBar::handle:horizontal:hover {{
+    background: {self._color_with_alpha(button_hover_bg, 0.98, button_hover_bg)};
+}}
+
+QScrollBar::handle:horizontal:pressed {{
+    background: {button_pressed_bg};
+}}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical,
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal {{
+    background: transparent;
+    border: none;
+    width: 0px;
+    height: 0px;
+}}
+
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical,
+QScrollBar::add-page:horizontal,
+QScrollBar::sub-page:horizontal {{
+    background: transparent;
+}}
+
+QTableCornerButton::section {{
+    background: {input_bg};
+    border: none;
+}}
+"""
+        qss_parts.append(chrome_qss)
 
         embedded_console_qss = f"""
 #logOutputContainer {{
@@ -1576,6 +1856,38 @@ QTextEdit#logOutput, QPlainTextEdit#logOutput {{
 }}
 """
             qss_parts.append(ui_alpha_qss)
+
+        if not has_background_image:
+            opaque_surface_qss = f"""
+QWidget#VitaDeckModern {{
+    background-color: {background_color};
+}}
+
+QWidget#VitaDeckModern QTabWidget#mainTabs::pane {{
+    background: {tab_pane_bg};
+}}
+
+QWidget#VitaDeckModern QTabBar {{
+    background: transparent;
+}}
+
+QWidget#VitaDeckModern QTabBar::tab {{
+    background: {tab_bg};
+}}
+
+QWidget#VitaDeckModern QTabBar::tab:selected {{
+    background: {tab_selected_bg};
+}}
+
+QWidget#VitaDeckModern QTabBar::tab:hover:!selected {{
+    background: {tab_hover_bg};
+}}
+
+#tabBarCornerWidget {{
+    background: transparent;
+}}
+"""
+            qss_parts.append(opaque_surface_qss)
         
         return "\n".join(qss_parts)
 
@@ -1802,6 +2114,9 @@ QTextEdit#logOutput, QPlainTextEdit#logOutput {{
         hbox_exec = QHBoxLayout()
         self.exec_entry = QLineEdit()
         self.exec_entry.setPlaceholderText("Path to eboot.bin or *.self")
+        self.exec_entry.textChanged.connect(
+            lambda t: settings.set("exec_path", normalize_path_for_storage(t))
+        )
         btn_browse_exec = QPushButton("Browse...")
         btn_browse_exec.clicked.connect(self.browse_exec_file)
         hbox_exec.addWidget(self.exec_entry)

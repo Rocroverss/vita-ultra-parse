@@ -1,4 +1,5 @@
-﻿import os
+import os
+from pathlib import Path
 from typing import Dict, Optional
 
 from PySide6.QtCore import Qt, Signal, Slot
@@ -21,6 +22,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from utils import normalize_path_for_storage
+from .theme import Theme
+
 
 class SettingsTab(QWidget):
     restart_log_server_signal = Signal(int)
@@ -30,8 +34,10 @@ class SettingsTab(QWidget):
     background_image_opacity_changed = Signal(float)
     background_mode_changed = Signal(str)
     ui_elements_opacity_changed = Signal(float)
+    background_image_path_changed = Signal(str)
     component_toggles_changed = Signal(dict)
     component_config_changed = Signal(dict, list)
+    build_directory_change_requested = Signal(str)
 
     COMPONENT_LABELS = {
         "workspace": "Workspace",
@@ -98,9 +104,7 @@ class SettingsTab(QWidget):
         lay_sdk.addLayout(hbox_build)
 
         self.sdk_input.textChanged.connect(lambda t: self.settings.set("sdk_path", t))
-        self.build_input.textChanged.connect(
-            lambda t: self.settings.set("last_build_dir", t)
-        )
+        self.build_input.editingFinished.connect(self._commit_build_directory_from_input)
         layout.addWidget(grp_sdk)
 
         grp_log = QGroupBox("Logging Server Configuration")
@@ -139,6 +143,7 @@ class SettingsTab(QWidget):
 
         grp_window = QGroupBox("Window Appearance")
         lay_window = QVBoxLayout(grp_window)
+
         lay_window.addWidget(QLabel("Window Opacity:"))
         self.opacity_slider = QSlider(Qt.Horizontal)
         self.opacity_slider.setRange(10, 100)
@@ -152,7 +157,6 @@ class SettingsTab(QWidget):
         hbox_opacity.addWidget(QLabel("10%"))
         hbox_opacity.addWidget(self.opacity_slider)
         hbox_opacity.addWidget(QLabel("100%"))
-
         lay_window.addLayout(hbox_opacity)
         lay_window.addWidget(self.opacity_label, alignment=Qt.AlignCenter)
         self.opacity_slider.valueChanged.connect(self.on_opacity_changed)
@@ -170,7 +174,6 @@ class SettingsTab(QWidget):
         hbox_bg_opacity.addWidget(QLabel("0%"))
         hbox_bg_opacity.addWidget(self.bg_opacity_slider)
         hbox_bg_opacity.addWidget(QLabel("100%"))
-
         lay_window.addLayout(hbox_bg_opacity)
         lay_window.addWidget(self.bg_opacity_label, alignment=Qt.AlignCenter)
         self.bg_opacity_slider.valueChanged.connect(self.on_background_image_opacity_changed)
@@ -182,6 +185,20 @@ class SettingsTab(QWidget):
         self.bg_mode_combo.addItem("Stretch", "stretch")
         self.bg_mode_combo.currentIndexChanged.connect(self.on_background_mode_changed)
         lay_window.addWidget(self.bg_mode_combo)
+
+        lay_window.addWidget(QLabel("Custom Background Image:"))
+        self.custom_background_label = QLabel()
+        self.custom_background_label.setWordWrap(True)
+        lay_window.addWidget(self.custom_background_label)
+
+        bg_image_buttons = QHBoxLayout()
+        self.btn_custom_background = QPushButton("Choose Background Image")
+        self.btn_custom_background.clicked.connect(self.browse_custom_background_image)
+        bg_image_buttons.addWidget(self.btn_custom_background)
+        self.btn_clear_custom_background = QPushButton("Use Theme Background")
+        self.btn_clear_custom_background.clicked.connect(self.clear_custom_background_image)
+        bg_image_buttons.addWidget(self.btn_clear_custom_background)
+        lay_window.addLayout(bg_image_buttons)
 
         lay_window.addWidget(QLabel("GUI Elements Opacity:"))
         self.ui_opacity_slider = QSlider(Qt.Horizontal)
@@ -196,7 +213,6 @@ class SettingsTab(QWidget):
         hbox_ui_opacity.addWidget(QLabel("10%"))
         hbox_ui_opacity.addWidget(self.ui_opacity_slider)
         hbox_ui_opacity.addWidget(QLabel("100%"))
-
         lay_window.addLayout(hbox_ui_opacity)
         lay_window.addWidget(self.ui_opacity_label, alignment=Qt.AlignCenter)
         self.ui_opacity_slider.valueChanged.connect(self.on_ui_elements_opacity_changed)
@@ -207,12 +223,10 @@ class SettingsTab(QWidget):
         lay_theme.addWidget(QLabel("Select UI Theme:"))
         self.theme_combo = QComboBox()
         self.theme_combo.addItems(self.discover_themes())
-
         current_theme_name = self.settings.get("theme_name", "default")
         idx = self.theme_combo.findText(current_theme_name)
         if idx != -1:
             self.theme_combo.setCurrentIndex(idx)
-
         self.theme_combo.currentTextChanged.connect(self.on_theme_changed)
         lay_theme.addWidget(self.theme_combo)
         layout.addWidget(grp_theme)
@@ -225,7 +239,6 @@ class SettingsTab(QWidget):
 
         self.component_list = QListWidget()
         self.component_list.setMinimumHeight(400)
-
         self.component_list.setSelectionMode(QListWidget.SingleSelection)
         self.component_list.setDragDropMode(QListWidget.InternalMove)
         self.component_list.setDefaultDropAction(Qt.MoveAction)
@@ -293,9 +306,120 @@ class SettingsTab(QWidget):
             themes = ["default"]
         return themes
 
+    def _theme_defaults(self) -> Dict[str, object]:
+        theme_name = self.theme_combo.currentText().strip() or self.settings.get("theme_name", "default") or "default"
+        theme_path = Path(self.themes_dir) / theme_name
+        theme = Theme(theme_name, theme_path, {})
+
+        mode_map = {
+            "scale": "stretch",
+            "stretch": "stretch",
+            "cut": "cut",
+            "cover": "cut",
+            "keep": "keep",
+            "contain": "keep",
+            "none": "keep",
+        }
+        mode = mode_map.get(str(getattr(theme, "aspect_ratio_mode", "keep")).lower().strip(), "keep")
+
+        theme_image_path = ""
+        image_location = str(getattr(theme, "image_location", "none")).strip()
+        if image_location and image_location.lower() != "none":
+            candidate = theme_path / image_location
+            if candidate.is_file():
+                theme_image_path = str(candidate)
+
+        try:
+            window_opacity = float(getattr(theme, "opacity", 1.0))
+        except (TypeError, ValueError):
+            window_opacity = 1.0
+        try:
+            image_opacity = float(getattr(theme, "image_opacity", 1.0))
+        except (TypeError, ValueError):
+            image_opacity = 1.0
+        try:
+            ui_opacity = float(getattr(theme, "ui_elements_opacity", 1.0))
+        except (TypeError, ValueError):
+            ui_opacity = 1.0
+
+        return {
+            "window_opacity": max(0.0, min(1.0, window_opacity)),
+            "background_image_opacity": max(0.0, min(1.0, image_opacity)),
+            "background_aspect_mode": mode,
+            "ui_elements_opacity": max(0.1, min(1.0, ui_opacity)),
+            "theme_image_path": theme_image_path,
+        }
+
+    def _refresh_appearance_controls(self):
+        theme_defaults = self._theme_defaults()
+
+        raw_window_opacity = self.settings.get("window_opacity", None)
+        try:
+            current_opacity = float(raw_window_opacity)
+        except (TypeError, ValueError):
+            current_opacity = float(theme_defaults["window_opacity"])
+        slider_value = int(max(0.0, min(1.0, current_opacity)) * 100)
+        self.opacity_slider.blockSignals(True)
+        self.opacity_slider.setValue(slider_value)
+        self.opacity_slider.blockSignals(False)
+        self.opacity_label.setText(f"{slider_value}%")
+
+        raw_bg_opacity = self.settings.get("background_image_opacity", None)
+        try:
+            current_bg_opacity = float(raw_bg_opacity)
+        except (TypeError, ValueError):
+            current_bg_opacity = float(theme_defaults["background_image_opacity"])
+        bg_slider_value = int(max(0.0, min(1.0, current_bg_opacity)) * 100)
+        self.bg_opacity_slider.blockSignals(True)
+        self.bg_opacity_slider.setValue(bg_slider_value)
+        self.bg_opacity_slider.blockSignals(False)
+        self.bg_opacity_label.setText(f"{bg_slider_value}%")
+
+        current_bg_mode = str(self.settings.get("background_aspect_mode", "") or "").lower().strip()
+        if not current_bg_mode:
+            current_bg_mode = str(theme_defaults["background_aspect_mode"])
+        idx_mode = self.bg_mode_combo.findData(current_bg_mode)
+        if idx_mode < 0:
+            idx_mode = 0
+        self.bg_mode_combo.blockSignals(True)
+        self.bg_mode_combo.setCurrentIndex(idx_mode)
+        self.bg_mode_combo.blockSignals(False)
+
+        raw_ui_opacity = self.settings.get("ui_elements_opacity", None)
+        try:
+            current_ui_opacity = float(raw_ui_opacity)
+        except (TypeError, ValueError):
+            current_ui_opacity = float(theme_defaults["ui_elements_opacity"])
+        ui_slider_value = int(max(0.1, min(1.0, current_ui_opacity)) * 100)
+        self.ui_opacity_slider.blockSignals(True)
+        self.ui_opacity_slider.setValue(ui_slider_value)
+        self.ui_opacity_slider.blockSignals(False)
+        self.ui_opacity_label.setText(f"{ui_slider_value}%")
+
+        custom_background = normalize_path_for_storage(self.settings.get("custom_background_image", ""))
+        theme_background = str(theme_defaults.get("theme_image_path", ""))
+        if custom_background and os.path.isfile(custom_background):
+            self.custom_background_label.setText(f"Custom background:\n{custom_background}")
+        elif custom_background:
+            if theme_background:
+                self.custom_background_label.setText(
+                    "Saved custom background is missing.\n"
+                    f"Using theme background:\n{theme_background}"
+                )
+            else:
+                self.custom_background_label.setText(
+                    "Saved custom background is missing.\nNo theme background image is configured."
+                )
+        elif theme_background:
+            self.custom_background_label.setText(f"Using theme background:\n{theme_background}")
+        else:
+            self.custom_background_label.setText("No background image configured.")
+        self.btn_clear_custom_background.setEnabled(bool(custom_background))
+
     def on_theme_changed(self, name: str):
         self.settings.set("theme_name", name)
         self.theme_changed.emit(name)
+        self._refresh_appearance_controls()
 
     def update_log_port_setting(self, text):
         try:
@@ -311,8 +435,48 @@ class SettingsTab(QWidget):
         else:
             d = QFileDialog.getExistingDirectory(self, "Select Folder", current_path)
         if d:
-            line_edit.setText(d)
-            self.settings.set(setting_key, d)
+            if setting_key == "last_build_dir":
+                self._request_build_directory_change(d)
+            else:
+                line_edit.setText(d)
+                self.settings.set(setting_key, d)
+
+    def _request_build_directory_change(self, new_path: str):
+        normalized_path = normalize_path_for_storage(new_path)
+        self.set_build_directory_value(normalized_path)
+        self.build_directory_change_requested.emit(normalized_path)
+
+    def _commit_build_directory_from_input(self):
+        self._request_build_directory_change(self.build_input.text())
+
+    def set_build_directory_value(self, value: str):
+        normalized_value = normalize_path_for_storage(value)
+        if self.build_input.text() == normalized_value:
+            return
+        self.build_input.blockSignals(True)
+        self.build_input.setText(normalized_value)
+        self.build_input.blockSignals(False)
+
+    def browse_custom_background_image(self):
+        start_path = self.settings.get("custom_background_image", "") or self.settings.get("dump_folder", os.getcwd())
+        filename, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Background Image",
+            start_path,
+            "Image Files (*.png *.jpg *.jpeg *.bmp *.webp);;All Files (*)",
+        )
+        if not filename:
+            return
+
+        normalized_path = normalize_path_for_storage(filename)
+        self.settings.set("custom_background_image", normalized_path)
+        self._refresh_appearance_controls()
+        self.background_image_path_changed.emit(normalized_path)
+
+    def clear_custom_background_image(self):
+        self.settings.set("custom_background_image", "")
+        self._refresh_appearance_controls()
+        self.background_image_path_changed.emit("")
 
     @Slot(int)
     def on_opacity_changed(self, value):
@@ -345,7 +509,7 @@ class SettingsTab(QWidget):
 
     def set_settings_values(self):
         self.sdk_input.setText(self.settings.get("sdk_path", ""))
-        self.build_input.setText(self.settings.get("last_build_dir", os.getcwd()))
+        self.set_build_directory_value(self.settings.get("last_build_dir", os.getcwd()))
         current_port = self.settings.get("log_port", 8080)
         self.log_port_input.blockSignals(True)
         self.log_port_input.setText(str(current_port))
@@ -359,38 +523,7 @@ class SettingsTab(QWidget):
             self.theme_combo.setCurrentIndex(idx)
             self.theme_combo.blockSignals(False)
 
-        current_opacity = self.settings.get("window_opacity", 1.0)
-        slider_value = int(current_opacity * 100)
-        self.opacity_slider.blockSignals(True)
-        self.opacity_slider.setValue(slider_value)
-        self.opacity_slider.blockSignals(False)
-        self.opacity_label.setText(f"{slider_value}%")
-        self.on_opacity_changed(slider_value)
-
-        current_bg_opacity = self.settings.get("background_image_opacity", 1.0)
-        bg_slider_value = int(max(0.0, min(1.0, current_bg_opacity)) * 100)
-        self.bg_opacity_slider.blockSignals(True)
-        self.bg_opacity_slider.setValue(bg_slider_value)
-        self.bg_opacity_slider.blockSignals(False)
-        self.bg_opacity_label.setText(f"{bg_slider_value}%")
-        self.on_background_image_opacity_changed(bg_slider_value)
-
-        current_bg_mode = self.settings.get("background_aspect_mode", "keep")
-        idx_mode = self.bg_mode_combo.findData(current_bg_mode)
-        if idx_mode < 0:
-            idx_mode = 0
-        self.bg_mode_combo.blockSignals(True)
-        self.bg_mode_combo.setCurrentIndex(idx_mode)
-        self.bg_mode_combo.blockSignals(False)
-        self.on_background_mode_changed(idx_mode)
-
-        current_ui_opacity = self.settings.get("ui_elements_opacity", 1.0)
-        ui_slider_value = int(max(0.1, min(1.0, current_ui_opacity)) * 100)
-        self.ui_opacity_slider.blockSignals(True)
-        self.ui_opacity_slider.setValue(ui_slider_value)
-        self.ui_opacity_slider.blockSignals(False)
-        self.ui_opacity_label.setText(f"{ui_slider_value}%")
-        self.on_ui_elements_opacity_changed(ui_slider_value)
+        self._refresh_appearance_controls()
 
         toggles = self._normalized_component_toggles()
         order = self._normalized_component_order()
@@ -425,4 +558,3 @@ class SettingsTab(QWidget):
 
         self.settings.set("log_port", port)
         self.restart_log_server_signal.emit(port)
-

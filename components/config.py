@@ -1,5 +1,12 @@
 import os
 
+from utils import (
+    DEFAULT_COMPONENT_ORDER,
+    DEFAULT_COMPONENT_TOGGLE_DEFAULTS,
+    DYNAMIC_APP_DIR_TOKEN,
+    get_dynamic_dump_folder,
+)
+
 # ==========================================
 # MOCK SETTINGS / REAL SETTINGS HANDLING
 # ==========================================
@@ -17,11 +24,17 @@ class MockSettings:
             "exec_path": "",
             "target_app_id": "PCSG00000",
             "launch_title_id": "VHBB00001",
-            "dump_folder": "",
+            "dump_folder": DYNAMIC_APP_DIR_TOKEN,
             "vita_port": 1337,
             "base_font_size": 10,
             "theme_name": "default",
-            "window_opacity": 1.0,
+            "window_opacity": None,
+            "background_image_opacity": None,
+            "background_aspect_mode": "",
+            "ui_elements_opacity": None,
+            "custom_background_image": "",
+            "component_toggles": dict(DEFAULT_COMPONENT_TOGGLE_DEFAULTS),
+            "component_order": list(DEFAULT_COMPONENT_ORDER),
         },
     }
     _current_workspace_name = DEFAULT_WORKSPACE_NAME
@@ -64,6 +77,8 @@ class MockSettings:
         return False
 
     def get(self, key, default=None):
+        if key == "dump_folder":
+            return get_dynamic_dump_folder()
         return self._current_data.get(key, default)
 
     def set(self, key, value):

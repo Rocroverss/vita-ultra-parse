@@ -5,9 +5,9 @@ import subprocess
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
                                QLabel, QLineEdit, QGroupBox, QPlainTextEdit, 
                                QFileDialog, QMessageBox, QApplication, QFrame)
-from PySide6.QtCore import QProcess, Slot
+from PySide6.QtCore import QProcess, Signal, Slot
 from PySide6.QtGui import QTextCursor, QColor, QTextCharFormat
-from utils import settings
+from utils import normalize_path_for_storage, settings
 from components.icon_utils import themed_icon
 import re
 
@@ -45,6 +45,8 @@ FILE_PATH_REGEX = re.compile(r'((?:/[^:]+)+\.[a-z]+:\d+:\d+:)', re.IGNORECASE)
 
 # --- COPY ICON SVG (RESTORED) ---
 class BuildTab(QWidget):
+    build_directory_change_requested = Signal(str)
+
     def __init__(self):
         super().__init__()
         self.build_dir = settings.get("last_build_dir")
@@ -66,6 +68,7 @@ class BuildTab(QWidget):
         dir_layout = QVBoxLayout()
         path_row = QHBoxLayout()
         self.build_dir_input = QLineEdit(self.build_dir) 
+        self.build_dir_input.editingFinished.connect(self._commit_build_dir_input)
         btn_browse = QPushButton("Browse")
         btn_browse.setFixedWidth(80)
         btn_browse.clicked.connect(self.browse_build_dir)
@@ -180,9 +183,24 @@ class BuildTab(QWidget):
     def browse_build_dir(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Build Directory", self.build_dir)
         if folder:
-            self.build_dir = folder
-            self.build_dir_input.setText(folder)
-            settings.set("last_build_dir", folder)
+            self._emit_build_directory_change(folder)
+
+    def _commit_build_dir_input(self):
+        self._emit_build_directory_change(self.build_dir_input.text())
+
+    def _emit_build_directory_change(self, new_path: str):
+        normalized_path = normalize_path_for_storage(new_path)
+        self.set_build_directory(normalized_path)
+        self.build_directory_change_requested.emit(normalized_path)
+
+    def set_build_directory(self, build_dir: str):
+        normalized_dir = normalize_path_for_storage(build_dir)
+        self.build_dir = normalized_dir
+        if self.build_dir_input.text() == normalized_dir:
+            return
+        self.build_dir_input.blockSignals(True)
+        self.build_dir_input.setText(normalized_dir)
+        self.build_dir_input.blockSignals(False)
 
     def open_terminal_in_build_dir(self):
         current_dir = self.build_dir
@@ -387,9 +405,7 @@ class BuildTab(QWidget):
         self.apply_theme_icons()
         new_build_dir = settings.get("last_build_dir", self.build_dir or os.getcwd())
         if new_build_dir:
-            self.build_dir = new_build_dir
-            if self.build_dir_input.text() != new_build_dir:
-                self.build_dir_input.setText(new_build_dir)
+            self.set_build_directory(new_build_dir)
     
     def cleanup(self):
         if self.build_process.state() != QProcess.NotRunning:

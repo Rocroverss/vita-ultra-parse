@@ -1,8 +1,9 @@
-﻿import os
+import os
+import shutil
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QEvent, Qt, QUrl, Slot
+from PySide6.QtCore import QEvent, QTimer, Qt, QUrl, Slot
 from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -21,6 +22,7 @@ class ScreenshotsTab(QWidget):
         super().__init__()
         self.screenshots_dir = Path(screenshots_dir)
         self.screenshots_dir.mkdir(parents=True, exist_ok=True)
+        self._known_files = []
 
         main_layout = QHBoxLayout(self)
         left_panel = QVBoxLayout()
@@ -63,6 +65,12 @@ class ScreenshotsTab(QWidget):
         main_layout.addLayout(right_panel, 3)
 
         self.image_display.installEventFilter(self)
+
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.setInterval(5000)
+        self.refresh_timer.timeout.connect(self.refresh_list)
+        self.refresh_timer.start()
+
         self.refresh_list()
 
     def eventFilter(self, source, event):
@@ -104,24 +112,70 @@ class ScreenshotsTab(QWidget):
 
     @Slot()
     def refresh_list(self):
-        self.screenshot_list.clear()
+        self._refresh_list()
+
+    def _refresh_list(self, focus_path: Optional[Path] = None):
+        current_name = None
+        current_item = self.screenshot_list.currentItem()
+        if current_item and current_item.text() != "No screenshots found.":
+            current_name = current_item.text()
+
         files = sorted(
             [f for f in self.screenshots_dir.iterdir() if f.is_file()],
             key=os.path.getmtime,
             reverse=True,
         )
+        file_names = [file_path.name for file_path in files]
 
         if not files:
+            self._known_files = []
+            self.screenshot_list.clear()
             self.screenshot_list.addItem("No screenshots found.")
             self.image_display.clear()
             self.image_display.setText("Select a screenshot to view it here.")
             return
 
+        preferred_name = None
+        if focus_path is not None:
+            preferred_name = Path(focus_path).name
+        elif current_name in file_names:
+            preferred_name = current_name
+        elif self._known_files != file_names:
+            preferred_name = file_names[0]
+        else:
+            preferred_name = current_name or file_names[0]
+
+        self._known_files = file_names
+        self.screenshot_list.clear()
         for file_path in files:
             self.screenshot_list.addItem(file_path.name)
 
-        if self.screenshot_list.count() > 0 and self.screenshot_list.item(0).text() != "No screenshots found.":
+        matched = False
+        if preferred_name:
+            for index in range(self.screenshot_list.count()):
+                item = self.screenshot_list.item(index)
+                if item.text() == preferred_name:
+                    self.screenshot_list.setCurrentRow(index)
+                    matched = True
+                    break
+        if not matched and self.screenshot_list.count() > 0:
             self.screenshot_list.setCurrentRow(0)
+
+    @Slot(str)
+    def import_screenshot(self, screenshot_path: str):
+        source_path = Path(screenshot_path)
+        if not source_path.is_file():
+            self.refresh_list()
+            return
+
+        destination_path = self.screenshots_dir / source_path.name
+        try:
+            if source_path.resolve() != destination_path.resolve():
+                shutil.copy2(source_path, destination_path)
+        except Exception:
+            pass
+
+        self._refresh_list(focus_path=destination_path)
 
     @Slot()
     def open_folder(self):
@@ -137,21 +191,30 @@ class ScreenshotsTab(QWidget):
     def open_selected_file(self):
         file_path = self._get_selected_path()
         if not file_path:
-            if self.screenshot_list.count() == 1 and self.screenshot_list.item(0).text() == "No screenshots found.":
+            if (
+                self.screenshot_list.count() == 1
+                and self.screenshot_list.item(0).text() == "No screenshots found."
+            ):
                 QMessageBox.information(self, "Selection Info", "No screenshots to open.")
             else:
-                QMessageBox.warning(self, "Selection Error", "Please select a screenshot file first.")
+                QMessageBox.warning(
+                    self, "Selection Error", "Please select a screenshot file first."
+                )
             return
 
         url = QUrl.fromLocalFile(str(file_path))
         if not QDesktopServices.openUrl(url):
-            QMessageBox.critical(self, "Open File Error", f"Could not open file: {file_path.name}")
+            QMessageBox.critical(
+                self, "Open File Error", f"Could not open file: {file_path.name}"
+            )
 
     @Slot()
     def delete_selected_file(self):
         file_path = self._get_selected_path()
         if not file_path:
-            QMessageBox.warning(self, "Selection Error", "Please select a screenshot file to delete.")
+            QMessageBox.warning(
+                self, "Selection Error", "Please select a screenshot file to delete."
+            )
             return
 
         reply = QMessageBox.question(
