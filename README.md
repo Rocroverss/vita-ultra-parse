@@ -2,9 +2,9 @@
 
 A development utility suite for the **PS Vita**, built to help with logging, crash parsing, screenshots, FTP transfer, project builds, and common console commands.
 
-The project was inspired by an idea shared on the Vita Nuova Discord by developer **gl33ntwine**, you can find his github [here](https://github.com/v-atamanenko).
+This project was built from scratch in Python 3.x and was inspired by an idea shared on the Vita Nuova Discord by developer **gl33ntwine**. You can check out his GitHub profile [v-atamanenko](https://github.com/v-atamanenko). You can also view the original concept screenshot [here](IMG/vitadeck.png). 
 
-![Original idea](IMG/vitadeck.png)
+Feel free to modify, fork, and contribute to the project by opening pull requests.
 
 ---
 
