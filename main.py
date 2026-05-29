@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QLineEdit, QTabWidget,
     QGroupBox, QMessageBox, QFrame, QFileDialog, QStyle,
     QTextEdit, QSpinBox, QListWidget, QListWidgetItem,
-    QInputDialog, QComboBox, QSlider, QSplitter,
+    QInputDialog, QComboBox, QSlider, QSplitter, QStackedWidget,
     QTextBrowser  
 )
 from PySide6.QtGui import (
@@ -1002,6 +1002,9 @@ class VitaDeckModern(QWidget):
         elif hasattr(self.tab_settings, "component_toggles_changed"):
             self.tab_settings.component_toggles_changed.connect(self.on_component_toggles_changed)
         self.idx_settings = self.tabs.addTab(self.tab_settings, "Settings")
+        self.tabs_stack = self.tabs.findChild(QStackedWidget)
+        if self.tabs_stack is not None:
+            self.tabs_stack.setObjectName("mainTabsStack")
         self.tab_settings.opacity_changed.connect(self.set_window_opacity)
         if hasattr(self.tab_settings, "background_image_opacity_changed"):
             self.tab_settings.background_image_opacity_changed.connect(
@@ -1591,6 +1594,17 @@ class VitaDeckModern(QWidget):
             radius_parts = radius_value.split()
             if radius_parts:
                 tab_top_radius = radius_parts[0]
+        pane_radius_match = re.search(
+            r"QTabWidget::pane\s*\{[^}]*border-radius:\s*([^;]+);",
+            qss,
+            re.IGNORECASE | re.DOTALL,
+        )
+        pane_corner_radius = "10px"
+        if pane_radius_match:
+            pane_radius_value = pane_radius_match.group(1).strip()
+            pane_radius_parts = pane_radius_value.split()
+            if pane_radius_parts:
+                pane_corner_radius = pane_radius_parts[0]
         special_button_radius = icon_button_radius
 
         chrome_qss = f"""
@@ -1600,10 +1614,18 @@ QTabWidget#mainTabs {{
 }}
 
 QTabWidget#mainTabs::pane {{
+    background: transparent;
+    border: none;
+    top: 0px;
+}}
+
+QStackedWidget#mainTabsStack {{
     background: {tab_pane_bg};
     border: 1px solid {tab_pane_border};
-    border-radius: 10px;
-    top: -1px;
+    border-top-left-radius: 0px;
+    border-top-right-radius: {pane_corner_radius};
+    border-bottom-left-radius: {pane_corner_radius};
+    border-bottom-right-radius: {pane_corner_radius};
 }}
 
 QTabBar {{
@@ -1827,7 +1849,7 @@ QPushButton:pressed {{
     background-color: {button_pressed_alpha};
 }}
 
-QTabWidget::pane {{
+QStackedWidget#mainTabsStack {{
     background: {tab_pane_bg_alpha};
 }}
 
@@ -1863,7 +1885,7 @@ QWidget#VitaDeckModern {{
     background-color: {background_color};
 }}
 
-QWidget#VitaDeckModern QTabWidget#mainTabs::pane {{
+QWidget#VitaDeckModern QStackedWidget#mainTabsStack {{
     background: {tab_pane_bg};
 }}
 
