@@ -19,6 +19,7 @@ class FtpWorker(QThread):
     listing_signal = Signal(list)
     progress_signal = Signal(str)
     downloaded_file_signal = Signal(str)
+    SUPPORTED_SCREENSHOT_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
     
     def __init__(self):
         super().__init__()
@@ -206,6 +207,16 @@ class FtpWorker(QThread):
             
         return files_list
 
+    def _is_supported_screenshot_file(self, file_name: str) -> bool:
+        return Path(file_name).suffix.lower() in self.SUPPORTED_SCREENSHOT_EXTENSIONS
+
+    def _screenshot_sort_key(self, remote_file: str):
+        file_name = Path(remote_file).name
+        stem = Path(file_name).stem
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}", stem):
+            return (1, stem)
+        return (0, file_name.lower())
+
     def _do_download_latest(self, remote_path: str, local_path: Path, file_pattern: str, is_recursive: bool):
         if not self.ftp:
             self.status_signal.emit("Error: Not connected to Vita console.", "red")
@@ -217,23 +228,33 @@ class FtpWorker(QThread):
         try:
             all_files = self._get_file_list_flat(remote_path) 
             
-            pattern = re.compile(file_pattern) if file_pattern else None
+            pattern = re.compile(file_pattern, re.IGNORECASE) if file_pattern else None
             relevant_files = []
             for remote_file in all_files:
                 file_name = Path(remote_file).name
+                if not self._is_supported_screenshot_file(file_name):
+                    continue
                 if pattern is not None:
                     if not pattern.fullmatch(file_name):
                         continue
-                elif not file_name.lower().endswith(".jpg"):
-                    continue
                 relevant_files.append(remote_file)
+
+            if not relevant_files and pattern is not None:
+                relevant_files = [
+                    remote_file
+                    for remote_file in all_files
+                    if self._is_supported_screenshot_file(Path(remote_file).name)
+                ]
             
             if not relevant_files:
-                self.status_signal.emit(f"No .jpg files found in {remote_path}.", "#777")
+                self.status_signal.emit(
+                    f"No screenshot image files found in {remote_path}.",
+                    "#777",
+                )
                 self.progress_signal.emit("Idle")
                 return
 
-            relevant_files.sort()
+            relevant_files.sort(key=self._screenshot_sort_key)
             latest_file_remote_path = relevant_files[-1]
             latest_file_name = Path(latest_file_remote_path).name
             
@@ -250,7 +271,10 @@ class FtpWorker(QThread):
             self.progress_signal.emit(f"Downloading {latest_file_name}...")
             
             with open(downloaded_file_path, 'wb') as local_file:
-                self.ftp.retrbinary(f'RETR {latest_file_name}', local_file.write)
+                self.ftp.retrbinary(
+                    f"RETR {latest_file_remote_path}",
+                    local_file.write,
+                )
 
             if downloaded_file_path.resolve() != gallery_file_path.resolve():
                 shutil.copy2(downloaded_file_path, gallery_file_path)

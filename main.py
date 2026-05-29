@@ -1005,6 +1005,10 @@ class VitaDeckModern(QWidget):
         self.tabs_stack = self.tabs.findChild(QStackedWidget)
         if self.tabs_stack is not None:
             self.tabs_stack.setObjectName("mainTabsStack")
+        self._special_active_index: Optional[int] = None
+        self._last_component_tab_index: Optional[int] = (
+            self.tabs.currentIndex() if self.tabs.count() else None
+        )
         self.tab_settings.opacity_changed.connect(self.set_window_opacity)
         if hasattr(self.tab_settings, "background_image_opacity_changed"):
             self.tab_settings.background_image_opacity_changed.connect(
@@ -1022,7 +1026,8 @@ class VitaDeckModern(QWidget):
             )
 
         self.setup_tab_icons()
-        self.tabs.currentChanged.connect(self._update_special_tab_button_states)
+        self.tabs.currentChanged.connect(self._on_main_tab_changed)
+        self.tabs.tabBar().tabBarClicked.connect(self._on_component_tab_clicked)
 
         self._safe_set_tab_visible(self.idx_workspace, False)
         self._safe_set_tab_visible(self.idx_help, False)
@@ -1154,7 +1159,9 @@ class VitaDeckModern(QWidget):
             btn.setFixedSize(button_size, button_size)
             btn.setToolTip(name)
             
-            btn.clicked.connect(lambda checked=False, idx=tab_index: self.tabs.setCurrentIndex(idx))
+            btn.clicked.connect(
+                lambda checked=False, idx=tab_index: self._activate_special_tab(idx)
+            )
             
             corner_layout.addWidget(btn)
             self.icon_buttons.append(btn)
@@ -1164,8 +1171,59 @@ class VitaDeckModern(QWidget):
         corner_widget.show()
         self._update_special_tab_button_states()
 
-    def _update_special_tab_button_states(self):
+    def _is_special_tab_index(self, tab_index: Optional[int]) -> bool:
+        return tab_index in {self.idx_workspace, self.idx_settings, self.idx_help}
+
+    def _show_tab_page_for_index(self, tab_index: Optional[int]):
+        if tab_index is None or tab_index < 0:
+            return
+        page = self.tabs.widget(tab_index)
+        if page is None:
+            return
+        if self.tabs_stack is not None:
+            self.tabs_stack.setCurrentWidget(page)
+            return
+        self.tabs.setCurrentIndex(tab_index)
+
+    def _show_component_tab(self, tab_index: Optional[int]):
+        if tab_index is None or tab_index < 0:
+            return
+        if self.tabs.currentIndex() != tab_index:
+            self.tabs.setCurrentIndex(tab_index)
+            return
+        self._special_active_index = None
+        self._last_component_tab_index = tab_index
+        self._show_tab_page_for_index(tab_index)
+        self._update_special_tab_button_states()
+
+    def _activate_special_tab(self, tab_index: Optional[int]):
+        if tab_index is None or tab_index < 0:
+            return
         current_index = self.tabs.currentIndex()
+        if not self._is_special_tab_index(current_index):
+            self._last_component_tab_index = current_index
+        self._special_active_index = tab_index
+        self._show_tab_page_for_index(tab_index)
+        self._update_special_tab_button_states()
+
+    @Slot(int)
+    def _on_component_tab_clicked(self, tab_index: int):
+        if self._special_active_index is None:
+            return
+        if tab_index == self.tabs.currentIndex():
+            self._show_component_tab(tab_index)
+
+    @Slot(int)
+    def _on_main_tab_changed(self, current_index: int):
+        if self._is_special_tab_index(current_index):
+            self._special_active_index = current_index
+        else:
+            self._special_active_index = None
+            self._last_component_tab_index = current_index
+        self._update_special_tab_button_states()
+
+    def _update_special_tab_button_states(self):
+        current_index = self._special_active_index
         for tab_index, button in getattr(self, "special_tab_buttons", {}).items():
             is_active = current_index == tab_index
             if button.isChecked() != is_active:
@@ -1285,11 +1343,11 @@ class VitaDeckModern(QWidget):
             switched = False
             for i in range(self.tabs.count()):
                 if tab_bar.isTabVisible(i):
-                    self.tabs.setCurrentIndex(i)
+                    self._show_component_tab(i)
                     switched = True
                     break
             if not switched and self.idx_settings is not None:
-                self.tabs.setCurrentIndex(self.idx_settings)
+                self._activate_special_tab(self.idx_settings)
 
         restart_needed = []
         if self._component_enabled("workspace") and self.idx_workspace is None:
@@ -2079,40 +2137,12 @@ QWidget#VitaDeckModern QTabBar::tab:hover:!selected {{
         """Initiates the FTP download command after the screenshot has been triggered and saved."""
         # 3. Define remote path and pattern
         REMOTE_SCREENSHOT_DIR = "ux0:/picture/SCREENSHOT/"
-        # The file pattern is for names like: 2025-12-11_10-50-00.jpg
-        SCREENSHOT_FILE_PATTERN = r'\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.jpg'
-        
-        # FIX START: Robustly determine the local download folder to handle cross-OS path issues.
-        configured_path = settings.get("dump_folder")
-        
-        # Define a robust default path
-        # NOTE: Using a subdirectory 'VitaDeck_Screenshots' in Downloads for cleanliness.
-        default_local_dir = Path.home() / "Downloads" / "VitaDeck_Screenshots" 
-
-        if configured_path:
-            # Check if running on non-Windows OS but loaded a Windows-style absolute path (e.g., 'C:\...')
-            # os.name == 'nt' is True on Windows. We use Path.home() as the absolute path fallback.
-            is_cross_os_path = os.name != 'nt' and configured_path.strip().startswith(('C:', 'D:', 'E:'))
-            
-            if is_cross_os_path:
-                # Use the default path if the configured path is foreign
-                local_dir = default_local_dir
-                if hasattr(self, 'log_message'):
-                    self.log_message(
-                        f"Warning: Configured dump folder '{configured_path}' appears invalid for this OS. Using default: {local_dir.resolve()}", 
-                        level='warn'
-                    )
-            else:
-                # Use the configured path
-                local_dir = Path(configured_path)
-        else:
-            # Use the default path if nothing is configured
-            local_dir = default_local_dir
-
-        # Resolve to an absolute path and create the directory
-        local_dir = local_dir.resolve()
-        local_dir.mkdir(parents=True, exist_ok=True) # Ensure folder exists
-        # FIX END
+        # Accept common Vita screenshot variants such as .jpg, .jpeg, or .png.
+        SCREENSHOT_FILE_PATTERN = (
+            r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.(?:jpg|jpeg|png|bmp|webp)"
+        )
+        local_dir = SCREENSHOTS_DIR.resolve()
+        local_dir.mkdir(parents=True, exist_ok=True)
 
         if hasattr(self.tab_transfer, "download_latest_file_async"):
             # This function call in file_transfer.py will handle disconnect/reconnect
@@ -2262,7 +2292,7 @@ QWidget#VitaDeckModern QTabBar::tab:hover:!selected {{
         self.request_battery_update()
 
         if self.idx_logging is not None and self._component_enabled("logging"):
-            self.tabs.setCurrentIndex(self.idx_logging)
+            self._show_component_tab(self.idx_logging)
 
     def launch_title_id(self):
         title_id = self.launch_id_entry.text().strip()
@@ -2294,7 +2324,7 @@ QWidget#VitaDeckModern QTabBar::tab:hover:!selected {{
         self.request_battery_update()
         
         if self.idx_logging is not None and self._component_enabled("logging"):
-            self.tabs.setCurrentIndex(self.idx_logging)
+            self._show_component_tab(self.idx_logging)
 
     # ------------------------------
     # Status bar / local IP
